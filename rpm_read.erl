@@ -12,12 +12,12 @@
 %% It's almost for sure have to be rewritten
 read_till_zero(F) -> read_till_zero(F, 1 ). 
 read_till_zero(F, Count) -> read_till_zero(F, Count, [], 0, <<>>).
-read_till_zero(_, 0, Strings, Offset , _ ) -> {ok, {Offset, Strings}};
+read_till_zero(_, 0, Strings, Offset , _ ) -> {ok, {Offset, lists:reverse(Strings)}};
 read_till_zero(F, Count, Strings, Offset , Acc) ->
 	case file:read(F,1) of
-		{ok, <<0>>} -> read_till_zero(F, Count - 1, [{binary:bin_to_list(Acc)}|Strings], Offset + 1, <<>>);
+		{ok, <<0>>} -> read_till_zero(F, Count - 1, [binary:bin_to_list(Acc)|Strings], Offset + 1, <<>>);
 		{ok, Data} when is_binary(Data) -> 
-			read_till_zero(F, Count, Strings, Offset + 1, <<Acc/binary,Data/binary>> )
+			           read_till_zero(F, Count, Strings, Offset + 1, <<Acc/binary,Data/binary>> )
 	end.
 
 %% One more helper function due to rpm header structure
@@ -30,27 +30,31 @@ debug(Message,Args) ->
 	true.
 
 %% A function used in shell to test module.
+on_load(File) ->
+	RPM = read_rpm(File),
+	rpm_get_filelist(RPM).
 
-read_rpm_desc(RPM) ->
-		{ok,F} = file:open(RPM,[read, raw, binary, read_ahead]),
-		read_rpm_lead(F),
+read_rpm(RPM) ->
+		{ok,F} = file:open(RPM,[read, binary, read_ahead]),
+		{ok, Lead} = read_rpm_lead(F),
 		{ok, Indexes} = read_rpm_signature_header(F),
 		{ok, {Off,Signature}} = read_rpm_header_data(F,Indexes),
 		%% signature may end anywhere in the file. We should round the offset by 8 byte boundary
 		round_offset_by_eight(F,Off),
 		{ok, Head_indexes} = read_rpm_signature_header(F),
 		{ok, {_,Header}} = read_rpm_header_data(F,Head_indexes),
-		{rpm_headers,{filename, RPM},{signature,Signature},{header,Header}}.
+		#rpm{filename=RPM, lead=Lead, signature=Signature, header=Header}.
 		
 read_rpm_lead(F) ->
 	Header_length=96,
 	{ok, ?RPM_LEAD} = file:read(F,Header_length),
 	%?RPM_LEAD = Data,
 	Magic=3987467995, % 16#edabeedb - rpm lead magic number
-	#rpm_lead{ magic = Magic,	major = Major, minor = Minor, type = Type, archnum = Archnum,
+	{ok, #rpm_lead{ magic = Magic,	major = Major, minor = Minor, type = Type, archnum = Archnum,
         		name = Name, osnum = Osnum,	signature_type = Sign_type,
 		   		reserved = 0 = Reserved 	% should always be zeroed.
-			   }.
+    	   }
+	}.
 
 read_rpm_signature_header(F) ->
     Header_length=16,
@@ -103,13 +107,33 @@ read_rpm_tag_data(F, [Index|Tail], {Off, Data}) when Index#rpm_sig_index.data_ty
 
 % read a "simple" value which size can be calculated using Index information.
 read_rpm_tag_data(F, [Index|Tail], {Off, Data}) when Index#rpm_sig_index.data_type /= 6, Index#rpm_sig_index.data_type < 8  ->
+	%Off=Index#rpm_sig_index.offset,
 	Multiplier = proplists:get_value(Index#rpm_sig_index.data_type, rpm_types_sizes()),
 	{ok, D} = file:read(F, Index#rpm_sig_index.num_of_entries * Multiplier), 
-	debug("read ~B bytes starting from ~B~n",[Index#rpm_sig_index.num_of_entries * Multiplier, Off]),
-	Tag_data = {Index#rpm_sig_index.tag, D},
+	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_sig_index.num_of_entries * Multiplier, Multiplier, Off]),
+	Tag_data = {Index#rpm_sig_index.tag, [ Bin || <<Bin:Multiplier/unit:8>> <= D ]},
+	debug("~w, ~w~n",[D, Tag_data]),
 	read_rpm_tag_data(F, Tail, {Off + Index#rpm_sig_index.num_of_entries * Multiplier, [Tag_data|Data]}).
 
+%%% Functions to work with rpm description from read_rpm/1
+rpm_get_filelist(RPM_DESC) ->
+	join_filelist(proplists:get_value(1116, RPM_DESC#rpm.header),
+				proplists:get_value(1117, RPM_DESC#rpm.header),
+				proplists:get_value(1118, RPM_DESC#rpm.header)).
 
+%% filelist is in 3 indexes: basenames, directories and "a link" between them, dir index.
+%% length (Dir_index) == length( Base_names)
+%% directories 
+join_filelist(Dir_index, Base_names, Directories) -> %when is_binary(Dir_indexes) ->
+	%lists:map(fun(A) -> io:format("[~s],~n",[A]) end,Base_names ++ Directories),
+	%io:format("~w~n ~s~n ~s~n", [Dir_index, Base_names, Directories]),
+	lists:map(fun({A,B})-> A++B end, 
+			  lists:keymap( fun(Index)->lists:nth(Index + 1, Directories) end, 
+							1, 
+							lists:zip((Dir_index), Base_names)
+			  )
+	).
+	
 
 
 
