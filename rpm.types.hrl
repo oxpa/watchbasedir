@@ -1,4 +1,4 @@
--record(rpm_header,{
+-record(rpm_lead,{
     	magic,
 	major,
     	minor,
