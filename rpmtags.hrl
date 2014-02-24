@@ -10,6 +10,7 @@
         reserved}
 ).
 -record(rpm_sig_index, {tag, data_type, offset, num_of_entries}).
+-record(rpm, {filename, lead, signature, header}).
 
 rpm_types() ->
 	get_rpmTagType_e().
