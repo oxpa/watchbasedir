@@ -125,20 +125,60 @@ read_rpm_tag_data(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_sig_i
 %% filelist is in 3 indexes: basenames, directories and "a link" between them, dir index.
 %% length (Dir_index) == length( Base_names)
 %% directories are numerated from 0, so have to add 1 in nth/2
-join_filelist(Dir_index, Base_names, Directories) when Dir_index == undefined; Base_names == undefined; Directories == undefined -> 
-    {'file',''};
+%% if at least on of these arrays are not defined - it's an RPM without files (e.g. meta package with reqs only).
+
+join_filelist(Dir_index, Base_names, Directories) 
+	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> {'file',''};
+
 join_filelist(Dir_index, Base_names, Directories) -> 
         lists:zipwith(fun(A,B)-> {'file', lists:nth(A+1, Directories) ++ B} end, Dir_index,  Base_names).
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
-	join_filelist(proplists:get_value(1116, RPM_DESC#rpm.header),
-				proplists:get_value(1117, RPM_DESC#rpm.header),
-				proplists:get_value(1118, RPM_DESC#rpm.header)).
+	case proplists:get_value(1027, RPM_DESC#rpm.header) of
+		undefined -> join_filelist(proplists:get_value(1116, RPM_DESC#rpm.header),
+								   proplists:get_value(1117, RPM_DESC#rpm.header),
+				                   proplists:get_value(1118, RPM_DESC#rpm.header));
+		A -> A
+	end.
 
-%rpm_get_name(RPM_DESC)-> {}
-%rpm_get_arch(RPM_DESC)-> {}
-%rpm_get_version(RPM_DESC) -> %{version, [epoch, ver, release]}
+%% helper functions which does 90% of "get_tag_value" job...
+rpm_get_header_parameter_by_id(RPM_DESC, Id) ->
+	proplists:get_value(Id, RPM_DESC#rpm.header).
+
+rpm_get_signature_parameter_by_id(RPM_DESC, Id) ->
+	proplists:get_value(Id, RPM_DESC#rpm.signature).
+
+
+rpm_get_name(RPM_DESC)-> {name, [rpm_get_header_parameter_by_id(RPM_DESC, 1000)]}.
+
+rpm_get_arch(RPM_DESC)-> {arch, [rpm_get_header_parameter_by_id(RPM_DESC, 1022)]}.
+
+rpm_get_version(RPM_DESC) -> 
+	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003)},
+				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
+				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
+			  ],[]}.
+
+rpm_get_summary(RPM_DESC) -> {summary,[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
+
 %rpm_get_checksum(RPM_DESC) -> %{checksum, {type, pkgid}, checksum}
 %rpm_get_summary() ->
 %rpm_get_description() ->
+%packager
+%url
+%time file build
+%size package installed archive
+%location href
+%format
+%license
+%vendor
+%group
+%buildhost
+%sourcerpm
+%header-range
+%provides
+%requires
+
+
+
