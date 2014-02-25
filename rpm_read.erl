@@ -13,7 +13,7 @@
 read_till_zero(F, Max_Offset) -> read_till_zero(F, 1, Max_Offset ). 
 read_till_zero(F, Count, Max_Offset) -> read_till_zero(F, Count, Max_Offset, [], 0, <<>>).
 read_till_zero(_, 0, Max_Offset, Strings, Offset , _ ) -> {ok, {Offset, lists:reverse(Strings)}};
-read_till_zero(F, Count, Max_Offset, Strings, Offset , Acc) when Offset < Max_Offset ->
+read_till_zero(F, Count, Max_Offset, Strings, Offset , Acc) when Offset =< Max_Offset ->
 	case file:read(F,1) of
 		{ok, <<0>>} -> read_till_zero(F, Count - 1, Max_Offset, [binary:bin_to_list(Acc)|Strings], Offset + 1, <<>>);
 		{ok, Data} when is_binary(Data) -> 
@@ -22,11 +22,15 @@ read_till_zero(F, Count, Max_Offset, Strings, Offset , Acc) when Offset < Max_Of
 
 %% One more helper function due to rpm header structure
 round_offset_by_eight(F,Off) ->
-	file:read(F,Off rem 8).
+	case Off rem 8 of
+		0 -> true;
+		_ -> file:read(F,8 - (Off rem 8)),
+			debug("Moved from ~B by ~B bytes",[Off, 8 - (Off rem 8)])
+	end.
 
 %% A helper for future integration with lager or other logger
 debug(Message,Args) ->
-	io:format(Message,Args),
+	%io:format(Message,Args),
 	true.
 
 %% A function used in shell to test module.
@@ -41,8 +45,8 @@ read_rpm(RPM) ->
 		{ok, {Off,Signature}} = read_rpm_header_data(F,Indexes, Max_Offset),
 		%% signature may end anywhere in the file. We should round the offset by 8 byte boundary
 		round_offset_by_eight(F,Off),
-		{ok,{header_length, Max_Offset}, Head_indexes} = read_rpm_signature_header(F),
-		{ok, {_,Header}} = read_rpm_header_data(F,Head_indexes, Max_Offset),
+		{ok,{header_length, Max_Header_Offset}, Head_indexes} = read_rpm_signature_header(F),
+		{ok, {_,Header}} = read_rpm_header_data(F,Head_indexes, Max_Header_Offset),
 		#rpm{filename=RPM, lead=Lead, signature=Signature, header=Header}.
 		
 read_rpm_lead(F) ->
@@ -59,8 +63,9 @@ read_rpm_lead(F) ->
 read_rpm_signature_header(F) ->
     Header_length=16,
     {ok,Data} = file:read(F,Header_length),
+	debug("~w",[Data]),
 	?SIGNATURE = Data, 
-	% 9350632 = 16#8ead e8 - header magic number
+	% 9350632 = 16#8eade8 - header magic number
 	Magic = 9350632,
 	debug("Read magic: ~.16B , will read ~B index records with  ~B bytes of signature~n",[Magic,Index_count,Signature_bytes]),
 	read_rpm_index_entry(F,Index_count, Signature_bytes).
@@ -82,14 +87,16 @@ read_rpm_index_entry(F, Num_of_indexes, Max_Offset, Acc) when Num_of_indexes > 0
     {ok, Data} = file:read(F,Index_length),
 	?INDEX=Data,
 	debug("read tag ~B, ~B -th type at offset ~B. ~B entries.~n",[Tag, Data_type, Offset, Num_of_entries]),
-	read_rpm_index_entry(F, Num_of_indexes - 1, [#rpm_sig_index{tag=Tag,data_type=Data_type, offset=Offset,num_of_entries=Num_of_entries}|Acc]).
+	read_rpm_index_entry(F, Num_of_indexes - 1, Max_Offset, [#rpm_sig_index{tag=Tag,data_type=Data_type, offset=Offset,num_of_entries=Num_of_entries}|Acc]).
 	
 
 read_rpm_header_data(F, Indexes, Max_Offset) -> read_rpm_tag_data(F, Indexes, Max_Offset, {0, []}).
 
 
 % reading ended. Return.
-read_rpm_tag_data(_, [], _, {Off, Data}) -> {ok, {Off,Data}};
+read_rpm_tag_data(_, [], _, {Off, Data}) -> 
+	debug("read tag data till ~B",[Off]),
+	{ok, {Off,Data}};
 
 % read some data till next tag boundary
 read_rpm_tag_data(F, [Index|Tail], Max_Offset, {Off,Data}) when Index#rpm_sig_index.offset - Off /= 0, Off =< Max_Offset -> 
