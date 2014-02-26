@@ -158,7 +158,7 @@ rpm_get_version(RPM_DESC) ->
 	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003)},
 				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
 				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
-			  ],[]}.
+			  ]}.
 
 rpm_get_summary(RPM_DESC) -> {summary,[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
 
