@@ -30,7 +30,7 @@ round_offset_by_eight(F,Off) ->
 
 %% A helper for future integration with lager or other logger
 debug(Message,Args) ->
-	%io:format(Message,Args),
+	io:format(Message,Args),
 	true.
 
 %% A function used in shell to test module.
@@ -162,7 +162,24 @@ rpm_get_version(RPM_DESC) ->
 
 rpm_get_summary(RPM_DESC) -> {summary,[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
 
-%rpm_get_checksum(RPM_DESC) -> %{checksum, {type, pkgid}, checksum}
+rpm_get_checksum(Filename) ->
+	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
+	ShaContext = crypto:sha_init(),
+	MdContext = crypto:md5_init(),
+	rpm_get_checksum(F, MdContext, ShaContext).
+rpm_get_checksum(F, MdContext, ShaContext) ->
+	case file:read(F, 4096) of
+		eof -> {checksum, rpm_finalize_cs(crypto:md5_final(MdContext)),
+						rpm_finalize_cs(crypto:sha_final(ShaContext))};
+		{ok, Data} -> rpm_get_checksum(F, crypto:md5_update(MdContext,Data), crypto:sha_update(ShaContext,Data))
+	end.
+	
+rpm_finalize_cs(Sum) ->
+		%debug("~s~n", Sum),
+		lists:flatten(lists:map(fun(A) ->	io_lib:format("~.16B",[A]) end,	 
+				binary:bin_to_list(<< <<D>> || <<D:4>> <= Sum>>))).
+	
+	%{checksum, {type, pkgid}, checksum}
 %rpm_get_summary() ->
 %rpm_get_description() ->
 %packager
