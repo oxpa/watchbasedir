@@ -1,7 +1,7 @@
 -module(rpm_read).
 -compile(export_all).
 %-on_load(on_load/0).
-%-include("rpm.types.hrl").
+%-include("bin_to.erl").
 -include("rpmtags.hrl").
 %% Definition from http://www.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
 -define(RPM_LEAD, <<Magic:32,Major:8,Minor:8,Type:16,Archnum:16,Name:528/bits,Osnum:16,Sign_type:16,Reserved:128>>).
@@ -168,32 +168,32 @@ rpm_get_checksum(Filename) ->
 	MdContext = crypto:md5_init(),
 	rpm_get_checksum(F, MdContext, ShaContext).
 rpm_get_checksum(F, MdContext, ShaContext) ->
+	% there is no proper way of converting to textual hex.
+	% my hex is from erlang@c.j.r. It's fast and simple.
 	case file:read(F, 4096) of
-		eof -> {checksum, rpm_finalize_cs(crypto:md5_final(MdContext)),
-						rpm_finalize_cs(crypto:sha_final(ShaContext))};
+		eof -> {checksum, bin_to:hex(crypto:md5_final(MdContext)),
+						bin_to:hex(crypto:sha_final(ShaContext))};
 		{ok, Data} -> rpm_get_checksum(F, crypto:md5_update(MdContext,Data), crypto:sha_update(ShaContext,Data))
 	end.
 	
-rpm_finalize_cs(Sum) ->
-		%debug("~s~n", Sum),
-		lists:flatten(lists:map(fun(A) ->	io_lib:format("~.16B",[A]) end,	 
-				binary:bin_to_list(<< <<D>> || <<D:4>> <= Sum>>))).
-	
 	%{checksum, {type, pkgid}, checksum}
-%rpm_get_summary() ->
-%rpm_get_description() ->
-%packager
-%url
-%time file build
-%size package installed archive
+rpm_get_description(RPM_DESC) -> {description,[rpm_get_header_parameter_by_id(RPM_DESC, 1005)]}.
+rpm_get_packager(RPM_DESC) -> {packager,[rpm_get_header_parameter_by_id(RPM_DESC, 1015)]}.
+rpm_get_license(RPM_DESC) -> {license,[rpm_get_header_parameter_by_id(RPM_DESC, 1014)]}.
+rpm_get_url(RPM_DESC) -> {url,[rpm_get_header_parameter_by_id(RPM_DESC, 1020)]}.
+% http://lists.baseurl.org/pipermail/rpm-metadata/2010-April/001159.html 
+% "file" time in repo is mtime of the package
+rpm_get_buildtime(RPM_DESC) -> {build,[rpm_get_header_parameter_by_id(RPM_DESC, 1006)]}.
+rpm_get_archive_size(RPM_DESC) -> {archive,[rpm_get_signature_parameter_by_id(RPM_DESC, 1007)]}.
+rpm_get_installed_size(RPM_DESC) -> {installed,[rpm_get_header_parameter_by_id(RPM_DESC, 1009)]}.
 %location href
-%format
-%license
-%vendor
-%group
-%buildhost
-%sourcerpm
-%header-range
+%calculated relative package path
+
+rpm_get_vendor(RPM_DESC) -> {vendor,[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
+rpm_get_group(RPM_DESC) -> {group,[rpm_get_header_parameter_by_id(RPM_DESC, 1016)]}.
+rpm_get_buildhost(RPM_DESC) -> {buildhost,[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
+rpm_get_src(RPM_DESC) -> {sourcerpm,[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
+rpm_get_header_range(RPM_DESC) ->{}. %size of signature + size of header with index entries
 %provides
 %requires
 
