@@ -2,3 +2,20 @@ watchbasedir
 ============
 
 an erlang exercise 
+
+read this additionally:
+https://refspecs.linuxfoundation.org/LSB_2.0.1/LSB-Core/LSB-Core.html
+
+
+
+
+PMSENSE_LESS	0x02		LT LE
+RPMSENSE_GREATER	0x04	GT GE
+RPMSENSE_EQUAL	0x08	    EQ
+RPMSENSE_PREREQ	0x40	    pre="1"
+RPMSENSE_INTERP	0x100	 
+RPMSENSE_SCRIPT_PRE	0x200	 
+RPMSENSE_SCRIPT_POST	0x400	 
+RPMSENSE_SCRIPT_PREUN	0x800	 
+RPMSENSE_SCRIPT_POSTUN	0x1000	 
+RPMSENSE_RPMLIB	0x1000000	 

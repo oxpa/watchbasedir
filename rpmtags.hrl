@@ -9,8 +9,8 @@
         signature_type,
         reserved}
 ).
--record(rpm_sig_index, {tag, data_type, offset, num_of_entries}).
--record(rpm, {filename, lead, signature, header}).
+-record(rpm_tag_index, {tag, data_type, offset, num_of_entries}).
+-record(rpm, {filename, lead, signature, header, fileprops}).
 
 rpm_types() ->
 	get_rpmTagType_e().
