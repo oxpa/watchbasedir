@@ -52,11 +52,9 @@ read_rpm(RPM) ->
 		{ok,{header_iValues_length, Max_Header_Offset}, Head_indexes} = read_rpm_header(F),
 		{ok, {HOff,Header}} = read_rpm_header_data(F,Head_indexes, Max_Header_Offset),
 		{ok, Header_end} = round_offset_by_eight(F,HOff),
-		{ok, Fileprops} = file:read_file_info(RPM), %read_rpm_fileprops(RPM),
+		{ok, Fileprops} = file:read_file_info(RPM), 
 		#rpm{filename=RPM, lead=Lead, signature=Signature, header=[{header_range,[Header_start,Header_end]}|Header], fileprops=Fileprops}.
 		
-read_rpm_fileprops(RPM) -> {ok,true}.
-
 read_rpm_lead(F) ->
 	Header_length=96,
 	{ok, ?RPM_LEAD} = file:read(F,Header_length),
@@ -233,7 +231,31 @@ rpm_get_obsoletes(RPM_DESC) -> {obsoletes, lists:zip3(
 								rpm_get_header_parameter_by_id(RPM_DESC, 1114),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1115)
 								)}.
-rpm_sens_values_to_text(Value) ->
-	<<_:7,Lib:1,_:11,Postun:1,Preun:1,Post:1,Pre:1,Interp:1, _:1,Prereq:1,_:2,Eq:1,Gt:1,Lt:1,_:1>> = binary:encode_unsigned(Value).
 
-
+rpm_sens_values_to_text(Value) when is_integer(Value) ->
+	BValue = binary:encode_unsigned(Value),
+	NBValue = case byte_size(BValue) of
+		1 -> <<0,0,0,BValue/binary>>;
+		2 -> <<0,0,BValue/binary>>;
+		3 -> <<0,BValue/binary>>;
+		4 -> <<BValue/binary>>;
+		true -> {error, "unknown rpm sense"}
+	end,
+	rpm_sens_values_to_text(NBValue);
+	
+rpm_sens_values_to_text(Value) when is_binary(Value) ->
+	<<_:7,Lib:1,_:11,Postun:1,Preun:1,Post:1,Pre:1,Interp:1, _:1,Prereq:1,_:2,Eq:1,Gt:1,Lt:1,_:1>> = Value,
+	if	
+		Pre==1	-> Status=pre;
+		true	-> Status=ok
+	end,
+	Main_flags = binary:last(Value),
+	%% TODO: should parse all flags, not only from primary.xml ;)
+	if 
+		Main_flags == 2		-> {Status, "LT"};
+		Main_flags == 4		-> {Status, "GT"};
+		Main_flags == 8		-> {Status, "EQ"};
+		Main_flags == 10	-> {Status, "LE"};
+		Main_flags == 12	-> {Status, "GE"};
+		true				-> {Status, ""}
+	end.
