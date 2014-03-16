@@ -7,7 +7,7 @@
 
 %% Definition from http://www.rpm.org/max-rpm/s1-rpm-file-format-rpm-file-format.html
 -define(RPM_LEAD, <<Magic:32,Major:8,Minor:8,Type:16,Archnum:16,Name:528/bits,Osnum:16,Sign_type:16,Reserved:128>>).
--define(SIGNATURE, <<Magic:24,Header_version:8,Reserved:32,Index_count:32,Signature_bytes:32>>).
+-define(SIGNATURE, <<Magic:24,_Header_version:8,_Reserved:32,Index_count:32,Signature_bytes:32>>).
 -define(INDEX,<<Tag:32,Data_type:32,Offset:32,Num_of_entries:32>>).
 
 %% A helper function for C strings reading.
@@ -138,6 +138,26 @@ read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_ta
 %%%
 
 
+%% helper functions which does 90% of "get_tag_value" job...
+rpm_get_header_parameter_by_id(RPM_DESC, Id) ->
+	proplists:get_value(Id, RPM_DESC#rpm.header, []).
+
+rpm_get_signature_parameter_by_id(RPM_DESC, Id) ->
+	proplists:get_value(Id, RPM_DESC#rpm.signature, []).
+
+rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
+	case Id of
+					% 719528*86400 is seconds from 1 Jan 0 to Epoch (1 Jan 1970)
+		mtime	-> calendar:datetime_to_gregorian_seconds(RPM_DESC#rpm.fileprops#file_info.mtime) - 719528*86400; 
+		size	-> RPM_DESC#rpm.fileprops#file_info.size
+	end.
+
+rpm_get_checksum(Filename) ->
+	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
+	ShaContext = crypto:sha_init(),
+	MdContext = crypto:md5_init(),
+	rpm_get_checksum(F, MdContext, ShaContext).
+
 %% filelist is in 3 indexes: basenames, directories and "a link" between them, dir index.
 %% length (Dir_index) == length( Base_names)
 %% directories are numerated from 0, so have to add 1 in nth/2
@@ -147,7 +167,8 @@ join_filelist(Dir_index, Base_names, Directories)
 	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> {'file',''};
 
 join_filelist(Dir_index, Base_names, Directories) -> 
-        lists:zipwith(fun(A,B)-> {'file', lists:nth(A+1, Directories) ++ B} end, Dir_index,  Base_names).
+		% there is no special meaning for [] here. It's a convience element for xml encoding later
+        lists:zipwith(fun(A,B)-> {'file', [], lists:nth(A+1, Directories) ++ B} end, Dir_index,  Base_names).
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
@@ -158,34 +179,22 @@ rpm_get_filelist(RPM_DESC) ->
 		A -> A
 	end.
 
-%% helper functions which does 90% of "get_tag_value" job...
-rpm_get_header_parameter_by_id(RPM_DESC, Id) ->
-	proplists:get_value(Id, RPM_DESC#rpm.header).
+is_sublist(_Sublist,[]) -> false;
+is_sublist(Sublist,L=[_H|T]) ->
+	lists:prefix(Sublist,L) orelse is_sublist(Sublist,T).
 
-rpm_get_signature_parameter_by_id(RPM_DESC, Id) ->
-	proplists:get_value(Id, RPM_DESC#rpm.signature).
+rpm_get_primary_filelist(RPM_DESC) ->
+	lists:filter( fun({_,_,Name}) -> lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
+				 rpm_get_filelist(RPM_DESC)).
 
-rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
-	case Id of
-					% 719528*86400 is seconds from 1 Jan 0 to Epoch (1 Jan 1970)
-		mtime	-> calendar:datetime_to_gregorian_seconds(RPM_DESC#rpm.fileprops#file_info.mtime) - 719528*86400; 
-		size	-> RPM_DESC#rpm.fileprops#file_info.size
-	end.
-
-
-rpm_get_name(RPM_DESC)-> {name, [rpm_get_header_parameter_by_id(RPM_DESC, 1000)]}.
-rpm_get_arch(RPM_DESC)-> {arch, [rpm_get_header_parameter_by_id(RPM_DESC, 1022)]}.
+rpm_get_name(RPM_DESC)-> {name, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1000)]}.
+rpm_get_arch(RPM_DESC)-> {arch, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1022)]}.
 rpm_get_version(RPM_DESC) -> 
-	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003)},
+	{version, [{epoch, io_lib:format("~b", rpm_get_header_parameter_by_id(RPM_DESC, 1003))},
 				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
 				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
 			  ]}.
 rpm_get_summary(RPM_DESC) -> {summary,[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
-rpm_get_checksum(Filename) ->
-	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
-	ShaContext = crypto:sha_init(),
-	MdContext = crypto:md5_init(),
-	rpm_get_checksum(F, MdContext, ShaContext).
 rpm_get_checksum(F, MdContext, ShaContext) ->
 	% there is no proper way of converting to textual hex.
 	% my hex is from erlang@c.j.r. It's fast and simple.
@@ -211,17 +220,38 @@ rpm_get_group(RPM_DESC) -> {group,[rpm_get_header_parameter_by_id(RPM_DESC, 1016
 rpm_get_buildhost(RPM_DESC) -> {buildhost,[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
 rpm_get_src(RPM_DESC) -> {sourcerpm,[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
 rpm_get_header_range(RPM_DESC) ->{rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
-rpm_get_provides(RPM_DESC) -> {provides, lists:zip3( 
+
+rpm_normalize_version([]) -> [];
+rpm_normalize_version(Version) ->
+	 case re:split(Version,"[:-]") of 
+		[A,B,C] -> [{epoch,A},{ver,B},{rel,C}];
+		[B,C] -> [{epoch, "0"},{ver,B},{rel,C}]
+	 end.
+
+
+
+rpm_get_provides(RPM_DESC) -> {provides, lists:zipwith3( fun(Name,Flags, Version) ->
+								{'rpm:entry',[{name,Name},
+											rpm_sens_values_to_text(Flags),
+											rpm_normalize_version(Version)]} end,
 								rpm_get_header_parameter_by_id(RPM_DESC, 1047),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1112),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1113)
 								)}.
-rpm_get_requires(RPM_DESC) -> {requires, lists:zip3( 
-								rpm_get_header_parameter_by_id(RPM_DESC, 1049),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1048),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1050)
-								)}.
-rpm_get_conflicts(RPM_DESC) -> {conflicts, lists:zip3( 
+rpm_get_requires(RPM_DESC) -> {requires, 
+									lists:filter( fun({'rpm:entry',[{name,Name}|_]}) -> not lists:prefix("rpmlib(", Name)  end, 
+										lists:zipwith3( fun(Name,Flags, Version) -> 
+											{'rpm:entry',[{name,Name},
+												rpm_sens_values_to_text(Flags),
+												rpm_normalize_version(Version)]} end,
+											rpm_get_header_parameter_by_id(RPM_DESC, 1049),
+											rpm_get_header_parameter_by_id(RPM_DESC, 1048),
+											rpm_get_header_parameter_by_id(RPM_DESC, 1050)
+								))}.
+rpm_get_conflicts(RPM_DESC) -> {conflicts, lists:zipwith3( fun(Name,Flags, Version) ->
+                                {'rpm:entry',[{name,Name},
+                                            rpm_sens_values_to_text(Flags),
+                                            rpm_normalize_version(Version)]} end,
 								rpm_get_header_parameter_by_id(RPM_DESC, 1054),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1053),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1055)
@@ -243,19 +273,92 @@ rpm_sens_values_to_text(Value) when is_integer(Value) ->
 	end,
 	rpm_sens_values_to_text(NBValue);
 	
+% a little bit ugly, but it will help to render value a little bit easier
 rpm_sens_values_to_text(Value) when is_binary(Value) ->
-	<<_:7,Lib:1,_:11,Postun:1,Preun:1,Post:1,Pre:1,Interp:1, _:1,Prereq:1,_:2,Eq:1,Gt:1,Lt:1,_:1>> = Value,
-	if	
-		Pre==1	-> Status=pre;
-		true	-> Status=ok
+	<<_:7,_Lib:1,_:11,_Postun:1,_Preun:1,_Post:1,Pre:1,_Interp:1, _:1,_Prereq:1,_:2,_Eq:1,_Gt:1,_Lt:1,_:1>> = Value,
+	Pre_Value = if	
+		Pre==1	-> {pre,1};
+		true	-> []
 	end,
 	Main_flags = binary:last(Value),
 	%% TODO: should parse all flags, not only from primary.xml ;)
-	if 
-		Main_flags == 2		-> {Status, "LT"};
-		Main_flags == 4		-> {Status, "GT"};
-		Main_flags == 8		-> {Status, "EQ"};
-		Main_flags == 10	-> {Status, "LE"};
-		Main_flags == 12	-> {Status, "GE"};
-		true				-> {Status, ""}
-	end.
+	Main_flags_value = if 
+		Main_flags == 2		-> {flags, "LT"};
+		Main_flags == 4		-> {flags, "GT"};
+		Main_flags == 8		-> {flags, "EQ"};
+		Main_flags == 10	-> {flags, "LE"};
+		Main_flags == 12	-> {flags, "GE"};
+		true				-> []
+	end,
+	[Main_flags_value|Pre_Value].
+
+
+%%% XML part. Should be placed into a separate file later
+%-module("duexml"). %damn useless erlang xml encoder ;)
+%
+
+xml_compiled_REs() ->
+	% {RE,Replacement}
+	REs = [{"&", "\\&amp;"}, {"\"","\\&quot;"}, {"'","\\&apos;"}, {"<","\\&lt;"}, {">","\\&gt;"}],
+	lists:foldr(fun({RE,Repl},Acc) -> {ok, RE_C} = re:compile(RE), [{RE_C,Repl}|Acc] end, [], REs).
+
+
+escape_chars(Text, []) -> Text;
+escape_chars(Text, [{Re,Repl}|Replacements]) ->
+	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements).
+
+
+encode_attrs(Attrs) ->
+	encode_attrs(Attrs, []).
+encode_attrs([], Accum) -> Accum;
+encode_attrs(Attrs, Accum) ->
+	%TODO:remove compiling REs from here
+	REs = xml_compiled_REs(),
+	lists:foldr(fun
+					({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
+					(List, Acc) when is_list(List) -> [encode_attrs(List)|Acc] end,
+				Accum, 
+				Attrs).
+
+
+% a regular element
+encode_element({Element_name, Attrs, Text}) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
+	%TODO: remove compiling REs from here
+	REs = xml_compiled_REs(),
+	io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]);
+
+% a simple element
+encode_element({Element_name, Attrs}) when is_atom(Element_name), is_list(Attrs) ->
+	io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]);
+
+% for a list of elements
+encode_element(A_List) when is_list(A_List) ->
+	lists:foldr( fun(Elem, Acc) -> [encode_element(Elem)| Acc] end, [], A_List).
+
+default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
+
+%%% end of duexml module.
+
+%get_package_primary_xml(RPMD#rpm) ->
+%	rpm_get_name(RPMD)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
