@@ -315,25 +315,30 @@ encode_attrs(Attrs, Accum) ->
 	%TODO:remove compiling REs from here
 	REs = xml_compiled_REs(),
 	lists:foldr(fun
-					({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
-					(List, Acc) when is_list(List) -> [encode_attrs(List)|Acc] end,
+					%({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
+					({Atom,Value}, Acc) -> [[" "] ++ io_lib:write_atom(Atom) ++ ["=\""] ++ [escape_chars(Value,REs)] ++ ["\""]] ++ Acc; 
+					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
 				Attrs).
 
 
 % a regular element
-encode_element({Element_name, Attrs, Text}) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
+encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
 	%TODO: remove compiling REs from here
 	REs = xml_compiled_REs(),
-	io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]);
+	%io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]) ++ Accum;
+	io_lib:format("<~s", [Element_name]) ++ encode_attrs(Attrs) ++ ">" ++ escape_chars(Text,REs) ++ "</" ++ [Element_name] ++">\n" ++ Accum;
 
 % a simple element
-encode_element({Element_name, Attrs}) when is_atom(Element_name), is_list(Attrs) ->
-	io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]);
+encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
+	%io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]) ++ Accum;
+	io_lib:format("<~s",[Element_name]) ++  [encode_attrs(Attrs)] ++ "/>\n" ++ Accum;
 
 % for a list of elements
-encode_element(A_List) when is_list(A_List) ->
-	lists:foldr( fun(Elem, Acc) -> [encode_element(Elem)| Acc] end, [], A_List).
+encode_element(A_List, Accum) when is_list(A_List) ->
+	lists:foldr( fun(Elem, Acc) -> encode_element(Elem, Acc) end, Accum, A_List).
+
+encode_element(Element) -> encode_element(Element, []).
 
 default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
 
