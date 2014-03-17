@@ -53,7 +53,8 @@ read_rpm(RPM) ->
 		{ok, {HOff,Header}} = read_rpm_header_data(F,Head_indexes, Max_Header_Offset),
 		{ok, Header_end} = round_offset_by_eight(F,HOff),
 		{ok, Fileprops} = file:read_file_info(RPM), 
-		#rpm{filename=RPM, lead=Lead, signature=Signature, header=[{header_range,[Header_start,Header_end]}|Header], fileprops=Fileprops}.
+		Checksum = rpm_get_checksum(RPM),
+		#rpm{filename=RPM, lead=Lead, signature=Signature, header=[{header_range,[Header_start,Header_end]}|Header], fileprops=Fileprops, checksum=Checksum}.
 		
 read_rpm_lead(F) ->
 	Header_length=96,
@@ -139,6 +140,8 @@ read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_ta
 
 
 %% helper functions which does 90% of "get_tag_value" job...
+rpm_get_header_parameter_by_id(RPM_DESC, Id, Default) ->
+	proplists:get_value(Id, RPM_DESC#rpm.header, Default).
 rpm_get_header_parameter_by_id(RPM_DESC, Id) ->
 	proplists:get_value(Id, RPM_DESC#rpm.header, []).
 
@@ -152,6 +155,8 @@ rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
 		size	-> RPM_DESC#rpm.fileprops#file_info.size
 	end.
 
+rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
+	RPM_DESC#rpm.checksum;
 rpm_get_checksum(Filename) ->
 	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
 	ShaContext = crypto:sha_init(),
@@ -190,29 +195,29 @@ rpm_get_primary_filelist(RPM_DESC) ->
 rpm_get_name(RPM_DESC)-> {name, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1000)]}.
 rpm_get_arch(RPM_DESC)-> {arch, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1022)]}.
 rpm_get_version(RPM_DESC) -> 
-	{version, [{epoch, io_lib:format("~b", rpm_get_header_parameter_by_id(RPM_DESC, 1003))},
+	{version, [{epoch, io_lib:format("~b", rpm_get_header_parameter_by_id(RPM_DESC, 1003, [0]))},
 				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
 				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
 			  ]}.
-rpm_get_summary(RPM_DESC) -> {summary,[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
+rpm_get_summary(RPM_DESC) -> {summary,[],[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
 rpm_get_checksum(F, MdContext, ShaContext) ->
 	% there is no proper way of converting to textual hex.
 	% my hex is from erlang@c.j.r. It's fast and simple.
 	case file:read(F, 4096) of
-		eof -> {checksum, bin_to:hex(crypto:md5_final(MdContext)),
-						bin_to:hex(crypto:sha_final(ShaContext))};
+		eof -> {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
+						[{type, sha},{pkgid,'YES'}], bin_to:hex(crypto:sha_final(ShaContext))};
 		{ok, Data} -> rpm_get_checksum(F, crypto:md5_update(MdContext,Data), crypto:sha_update(ShaContext,Data))
 	end.
-rpm_get_description(RPM_DESC) -> {description,[rpm_get_header_parameter_by_id(RPM_DESC, 1005)]}.
-rpm_get_packager(RPM_DESC) -> {packager,[rpm_get_header_parameter_by_id(RPM_DESC, 1015)]}.
-rpm_get_license(RPM_DESC) -> {license,[rpm_get_header_parameter_by_id(RPM_DESC, 1014)]}.
-rpm_get_url(RPM_DESC) -> {url,[rpm_get_header_parameter_by_id(RPM_DESC, 1020)]}.
+rpm_get_description(RPM_DESC) -> {description, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1005)]}.
+rpm_get_packager(RPM_DESC) -> {packager, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1015)]}.
+rpm_get_license(RPM_DESC) -> {'rpm:license',[rpm_get_header_parameter_by_id(RPM_DESC, 1014)]}.
+rpm_get_url(RPM_DESC) -> {url, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1020)]}.
 % http://lists.baseurl.org/pipermail/rpm-metadata/2010-April/001159.html 
 % "file" time in repo is mtime of the package
-rpm_get_filetime(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, mtime)}.
-rpm_get_buildtime(RPM_DESC) -> {build,[rpm_get_header_parameter_by_id(RPM_DESC, 1006)]}.
-rpm_get_archive_size(RPM_DESC) -> {archive,[rpm_get_signature_parameter_by_id(RPM_DESC, 1007)]}.
-rpm_get_installed_size(RPM_DESC) -> {installed,[rpm_get_header_parameter_by_id(RPM_DESC, 1009)]}.
+rpm_get_filetime(RPM_DESC) -> {file, [rpm_get_file_parameter_by_id(RPM_DESC, mtime)]}.
+rpm_get_buildtime(RPM_DESC) -> {build,rpm_get_header_parameter_by_id(RPM_DESC, 1006)}.
+rpm_get_archive_size(RPM_DESC) -> {archive,rpm_get_signature_parameter_by_id(RPM_DESC, 1007)}.
+rpm_get_installed_size(RPM_DESC) -> {installed,rpm_get_header_parameter_by_id(RPM_DESC, 1009)}.
 %location href
 %calculated relative package path
 rpm_get_vendor(RPM_DESC) -> {vendor,[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
@@ -303,9 +308,13 @@ xml_compiled_REs() ->
 	lists:foldr(fun({RE,Repl},Acc) -> {ok, RE_C} = re:compile(RE), [{RE_C,Repl}|Acc] end, [], REs).
 
 
-escape_chars(Text, []) -> Text;
-escape_chars(Text, [{Re,Repl}|Replacements]) ->
-	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements).
+escape_chars(Text, Acc, false) when is_atom(Text) ->
+		escape_chars(io_lib:format("~s", [Text]), Acc, true);
+escape_chars(Text, Acc, false) ->
+		escape_chars(io_lib:format("~p", Text), Acc, true);
+escape_chars(Text, [], true) -> Text;
+escape_chars(Text, [{Re,Repl}|Replacements], true) ->
+	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements, true).
 
 
 encode_attrs(Attrs) ->
@@ -316,7 +325,7 @@ encode_attrs(Attrs, Accum) ->
 	REs = xml_compiled_REs(),
 	lists:foldr(fun
 					%({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
-					({Atom,Value}, Acc) -> [[" "] ++ io_lib:write_atom(Atom) ++ ["=\""] ++ [escape_chars(Value,REs)] ++ ["\""]] ++ Acc; 
+					({Atom,Value}, Acc) -> [[" "] ++ io_lib:format("~s",[Atom]) ++ ["=\""] ++ [escape_chars(Value,REs,false)] ++ ["\""]] ++ Acc; 
 					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
 				Attrs).
@@ -327,12 +336,12 @@ encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is
 	%TODO: remove compiling REs from here
 	REs = xml_compiled_REs(),
 	%io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]) ++ Accum;
-	io_lib:format("<~s", [Element_name]) ++ encode_attrs(Attrs) ++ ">" ++ escape_chars(Text,REs) ++ "</" ++ [Element_name] ++">\n" ++ Accum;
+	io_lib:format("<~s", [Element_name]) ++ [encode_attrs(Attrs)] ++ ">" ++ [escape_chars(Text,REs, true)] ++ "</" ++ io_lib:format("<~s", [Element_name]) ++">\n" ++ Accum;
 
 % a simple element
 encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
 	%io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]) ++ Accum;
-	io_lib:format("<~s",[Element_name]) ++  [encode_attrs(Attrs)] ++ "/>\n" ++ Accum;
+	io_lib:format("<~s",[Element_name]) ++ [encode_attrs(Attrs)] ++ "/>\n" ++ Accum;
 
 % for a list of elements
 encode_element(A_List, Accum) when is_list(A_List) ->
@@ -344,11 +353,18 @@ default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
 
 %%% end of duexml module.
 
-%get_package_primary_xml(RPMD#rpm) ->
-%	rpm_get_name(RPMD)
-
-
-
+get_package_primary_xml(RPMD) ->
+	"<package type=\"rpm\">\n" ++ 
+	encode_element(rpm_get_name(RPMD)) ++
+	encode_element(rpm_get_arch(RPMD)) ++
+	encode_element(rpm_get_version(RPMD)) ++
+	encode_element(rpm_get_checksum(RPMD)) ++
+	encode_element(rpm_get_summary(RPMD)) ++
+	encode_element(rpm_get_description(RPMD)) ++
+	encode_element(rpm_get_packager(RPMD)) ++
+	encode_element(rpm_get_url(RPMD)) ++
+	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}) ++
+	encode_element({size,[{package, [rpm_get_file_parameter_by_id(RPMD, size)]},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}).
 
 
 
