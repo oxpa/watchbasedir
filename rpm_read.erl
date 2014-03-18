@@ -17,7 +17,7 @@ read_till_zero(F, Count, Max_Offset) -> read_till_zero(F, Count, Max_Offset, [],
 read_till_zero(_, 0, _, Strings, Offset , _ ) -> {ok, {Offset, lists:reverse(Strings)}};
 read_till_zero(F, Count, Max_Offset, Strings, Offset , Acc) when Offset =< Max_Offset ->
 	case file:read(F,1) of
-		{ok, <<0>>} -> read_till_zero(F, Count - 1, Max_Offset, [binary:bin_to_list(Acc)|Strings], Offset + 1, <<>>);
+		{ok, <<0>>} -> read_till_zero(F, Count - 1, Max_Offset, [Acc|Strings], Offset + 1, <<>>);
 		{ok, Data} when is_binary(Data) -> 
 			           read_till_zero(F, Count, Max_Offset,  Strings, Offset + 1, <<Acc/binary,Data/binary>> )
 	end.
@@ -54,7 +54,12 @@ read_rpm(RPM) ->
 		{ok, Header_end} = round_offset_by_eight(F,HOff),
 		{ok, Fileprops} = file:read_file_info(RPM), 
 		Checksum = rpm_get_checksum(RPM),
-		#rpm{filename=RPM, lead=Lead, signature=Signature, header=[{header_range,[Header_start,Header_end]}|Header], fileprops=Fileprops, checksum=Checksum}.
+		#rpm{filename=RPM, 
+			 lead=Lead, 
+			signature=Signature, 
+			header=[{header_range,[{start,Header_start},{'end',Header_end}]}|Header], 
+			fileprops=Fileprops, 
+			checksum=Checksum}.
 		
 read_rpm_lead(F) ->
 	Header_length=96,
@@ -122,14 +127,21 @@ read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_ta
 	Tag_data = {Index#rpm_tag_index.tag, String},
 	read_rpm_index_value(F, Tail, Max_Offset, {Offset+Off,[Tag_data|Data]});
 
+% a binary worth it's own implementation, cause doesn't require any transformation
+read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type == 7  ->
+	Multiplier = proplists:get_value(Index#rpm_tag_index.data_type, rpm_types_sizes()),
+	{ok, D} = file:read(F, Index#rpm_tag_index.num_of_entries * Multiplier),
+	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
+	read_rpm_index_value(F, Tail, Max_Offset, {Off + Index#rpm_tag_index.num_of_entries * Multiplier, [D|Data]});
 % read a "simple" value which size can be calculated using Index information.
-read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type /= 6, Index#rpm_tag_index.data_type < 8  ->
+read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type < 6  ->
 	%Off=Index#rpm_sig_index.offset,
 	Multiplier = proplists:get_value(Index#rpm_tag_index.data_type, rpm_types_sizes()),
 	{ok, D} = file:read(F, Index#rpm_tag_index.num_of_entries * Multiplier), 
 	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
-	Tag_data = {Index#rpm_tag_index.tag, [ Bin || <<Bin:Multiplier/unit:8>> <= D ]},
-	debug("~w, ~w~n",[D, Tag_data]),
+	debug("~p,",[D]),
+	Tag_data = {Index#rpm_tag_index.tag, [ integer_to_list(Bin) || <<Bin:Multiplier/unit:8>> <= D ]},
+	debug("~w~n",[Tag_data]),
 	read_rpm_index_value(F, Tail, Max_Offset, {Off + Index#rpm_tag_index.num_of_entries * Multiplier, [Tag_data|Data]}).
 
 
@@ -152,7 +164,7 @@ rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
 	case Id of
 					% 719528*86400 is seconds from 1 Jan 0 to Epoch (1 Jan 1970)
 		mtime	-> calendar:datetime_to_gregorian_seconds(RPM_DESC#rpm.fileprops#file_info.mtime) - 719528*86400; 
-		size	-> RPM_DESC#rpm.fileprops#file_info.size
+		size	-> integer_to_list( RPM_DESC#rpm.fileprops#file_info.size)
 	end.
 
 rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
@@ -173,7 +185,7 @@ join_filelist(Dir_index, Base_names, Directories)
 
 join_filelist(Dir_index, Base_names, Directories) -> 
 		% there is no special meaning for [] here. It's a convience element for xml encoding later
-        lists:zipwith(fun(A,B)-> {'file', [], lists:nth(A+1, Directories) ++ B} end, Dir_index,  Base_names).
+        lists:zipwith(fun(A,B)-> {'file', [], [lists:nth(A+1, Directories)|B]} end, Dir_index,  Base_names).
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
@@ -192,14 +204,14 @@ rpm_get_primary_filelist(RPM_DESC) ->
 	lists:filter( fun({_,_,Name}) -> lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
 				 rpm_get_filelist(RPM_DESC)).
 
-rpm_get_name(RPM_DESC)-> {name, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1000)]}.
-rpm_get_arch(RPM_DESC)-> {arch, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1022)]}.
+rpm_get_name(RPM_DESC)-> {name, [], rpm_get_header_parameter_by_id(RPM_DESC, 1000)}.
+rpm_get_arch(RPM_DESC)-> {arch, [], rpm_get_header_parameter_by_id(RPM_DESC, 1022)}.
 rpm_get_version(RPM_DESC) -> 
-	{version, [{epoch, io_lib:format("~b", rpm_get_header_parameter_by_id(RPM_DESC, 1003, [0]))},
+	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003, ["0"])},
 				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
 				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
 			  ]}.
-rpm_get_summary(RPM_DESC) -> {summary,[],[rpm_get_header_parameter_by_id(RPM_DESC, 1004)]}.
+rpm_get_summary(RPM_DESC) -> {summary,[],rpm_get_header_parameter_by_id(RPM_DESC, 1004)}.
 rpm_get_checksum(F, MdContext, ShaContext) ->
 	% there is no proper way of converting to textual hex.
 	% my hex is from erlang@c.j.r. It's fast and simple.
@@ -208,23 +220,23 @@ rpm_get_checksum(F, MdContext, ShaContext) ->
 						[{type, sha},{pkgid,'YES'}], bin_to:hex(crypto:sha_final(ShaContext))};
 		{ok, Data} -> rpm_get_checksum(F, crypto:md5_update(MdContext,Data), crypto:sha_update(ShaContext,Data))
 	end.
-rpm_get_description(RPM_DESC) -> {description, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1005)]}.
-rpm_get_packager(RPM_DESC) -> {packager, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1015)]}.
-rpm_get_license(RPM_DESC) -> {'rpm:license',[rpm_get_header_parameter_by_id(RPM_DESC, 1014)]}.
-rpm_get_url(RPM_DESC) -> {url, [], [rpm_get_header_parameter_by_id(RPM_DESC, 1020)]}.
+rpm_get_description(RPM_DESC) -> {description, [], rpm_get_header_parameter_by_id(RPM_DESC, 1005)}.
+rpm_get_packager(RPM_DESC) -> {packager, [], rpm_get_header_parameter_by_id(RPM_DESC, 1015)}.
+rpm_get_license(RPM_DESC) -> {'rpm:license',[],rpm_get_header_parameter_by_id(RPM_DESC, 1014)}.
+rpm_get_url(RPM_DESC) -> {url, [], rpm_get_header_parameter_by_id(RPM_DESC, 1020)}.
 % http://lists.baseurl.org/pipermail/rpm-metadata/2010-April/001159.html 
 % "file" time in repo is mtime of the package
-rpm_get_filetime(RPM_DESC) -> {file, [rpm_get_file_parameter_by_id(RPM_DESC, mtime)]}.
+rpm_get_filetime(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, mtime)}.
 rpm_get_buildtime(RPM_DESC) -> {build,rpm_get_header_parameter_by_id(RPM_DESC, 1006)}.
 rpm_get_archive_size(RPM_DESC) -> {archive,rpm_get_signature_parameter_by_id(RPM_DESC, 1007)}.
 rpm_get_installed_size(RPM_DESC) -> {installed,rpm_get_header_parameter_by_id(RPM_DESC, 1009)}.
 %location href
 %calculated relative package path
-rpm_get_vendor(RPM_DESC) -> {vendor,[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
-rpm_get_group(RPM_DESC) -> {group,[rpm_get_header_parameter_by_id(RPM_DESC, 1016)]}.
-rpm_get_buildhost(RPM_DESC) -> {buildhost,[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
-rpm_get_src(RPM_DESC) -> {sourcerpm,[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
-rpm_get_header_range(RPM_DESC) ->{rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
+rpm_get_vendor(RPM_DESC) -> {'rpm:vendor',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
+rpm_get_group(RPM_DESC) -> {'rpm:group',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1016)]}.
+rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
+rpm_get_src(RPM_DESC) -> {'rpm:sourcerpm',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
+rpm_get_header_range(RPM_DESC) -> {'rpm:header-range',rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
 
 rpm_normalize_version([]) -> [];
 rpm_normalize_version(Version) ->
@@ -237,7 +249,7 @@ rpm_normalize_version(Version) ->
 
 rpm_get_provides(RPM_DESC) -> {provides, lists:zipwith3( fun(Name,Flags, Version) ->
 								{'rpm:entry',[{name,Name},
-											rpm_sens_values_to_text(Flags),
+											rpm_sense_values_to_text(Flags),
 											rpm_normalize_version(Version)]} end,
 								rpm_get_header_parameter_by_id(RPM_DESC, 1047),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1112),
@@ -247,7 +259,7 @@ rpm_get_requires(RPM_DESC) -> {requires,
 									lists:filter( fun({'rpm:entry',[{name,Name}|_]}) -> not lists:prefix("rpmlib(", Name)  end, 
 										lists:zipwith3( fun(Name,Flags, Version) -> 
 											{'rpm:entry',[{name,Name},
-												rpm_sens_values_to_text(Flags),
+												rpm_sense_values_to_text(Flags),
 												rpm_normalize_version(Version)]} end,
 											rpm_get_header_parameter_by_id(RPM_DESC, 1049),
 											rpm_get_header_parameter_by_id(RPM_DESC, 1048),
@@ -255,7 +267,7 @@ rpm_get_requires(RPM_DESC) -> {requires,
 								))}.
 rpm_get_conflicts(RPM_DESC) -> {conflicts, lists:zipwith3( fun(Name,Flags, Version) ->
                                 {'rpm:entry',[{name,Name},
-                                            rpm_sens_values_to_text(Flags),
+                                            rpm_sense_values_to_text(Flags),
                                             rpm_normalize_version(Version)]} end,
 								rpm_get_header_parameter_by_id(RPM_DESC, 1054),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1053),
@@ -267,7 +279,9 @@ rpm_get_obsoletes(RPM_DESC) -> {obsoletes, lists:zip3(
 								rpm_get_header_parameter_by_id(RPM_DESC, 1115)
 								)}.
 
-rpm_sens_values_to_text(Value) when is_integer(Value) ->
+rpm_sense_values_to_text(Value) when is_list(Value) ->
+	rpm_sense_values_to_text(list_to_integer(Value));
+rpm_sense_values_to_text(Value) when is_integer(Value) ->
 	BValue = binary:encode_unsigned(Value),
 	NBValue = case byte_size(BValue) of
 		1 -> <<0,0,0,BValue/binary>>;
@@ -276,10 +290,10 @@ rpm_sens_values_to_text(Value) when is_integer(Value) ->
 		4 -> <<BValue/binary>>;
 		true -> {error, "unknown rpm sense"}
 	end,
-	rpm_sens_values_to_text(NBValue);
+	rpm_sense_values_to_text(NBValue);
 	
 % a little bit ugly, but it will help to render value a little bit easier
-rpm_sens_values_to_text(Value) when is_binary(Value) ->
+rpm_sense_values_to_text(Value) when is_binary(Value) ->
 	<<_:7,_Lib:1,_:11,_Postun:1,_Preun:1,_Post:1,Pre:1,_Interp:1, _:1,_Prereq:1,_:2,_Eq:1,_Gt:1,_Lt:1,_:1>> = Value,
 	Pre_Value = if	
 		Pre==1	-> {pre,1};
@@ -308,13 +322,13 @@ xml_compiled_REs() ->
 	lists:foldr(fun({RE,Repl},Acc) -> {ok, RE_C} = re:compile(RE), [{RE_C,Repl}|Acc] end, [], REs).
 
 
-escape_chars(Text, Acc, false) when is_atom(Text) ->
-		escape_chars(io_lib:format("~s", [Text]), Acc, true);
-escape_chars(Text, Acc, false) ->
-		escape_chars(io_lib:format("~p", Text), Acc, true);
-escape_chars(Text, [], true) -> Text;
-escape_chars(Text, [{Re,Repl}|Replacements], true) ->
-	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements, true).
+escape_chars(Text, Acc) when is_atom(Text) ->
+		escape_chars(io_lib:format("~s", [Text]), Acc);
+escape_chars(Text, Acc) when is_integer(Text) ->
+		escape_chars(io_lib:format("~b", [Text]), Acc);
+escape_chars(Text, []) -> Text;
+escape_chars(Text, [{Re,Repl}|Replacements]) ->
+	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements).
 
 
 encode_attrs(Attrs) ->
@@ -325,7 +339,8 @@ encode_attrs(Attrs, Accum) ->
 	REs = xml_compiled_REs(),
 	lists:foldr(fun
 					%({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
-					({Atom,Value}, Acc) -> [[" "] ++ io_lib:format("~s",[Atom]) ++ ["=\""] ++ [escape_chars(Value,REs,false)] ++ ["\""]] ++ Acc; 
+					({Atom,Value}, Acc) -> %debug("encoding ~p |~p|~n",[Atom,Value]), 
+											[[" "], io_lib:format("~s",[Atom]), ["=\""], [escape_chars(Value,REs)], ["\""], Acc]; 
 					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
 				Attrs).
@@ -336,12 +351,12 @@ encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is
 	%TODO: remove compiling REs from here
 	REs = xml_compiled_REs(),
 	%io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]) ++ Accum;
-	io_lib:format("<~s", [Element_name]) ++ [encode_attrs(Attrs)] ++ ">" ++ [escape_chars(Text,REs, true)] ++ "</" ++ io_lib:format("<~s", [Element_name]) ++">\n" ++ Accum;
+	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">", [escape_chars(Text,REs)], io_lib:format("</~s", [Element_name]),">\n", Accum];
 
 % a simple element
 encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
 	%io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]) ++ Accum;
-	io_lib:format("<~s",[Element_name]) ++ [encode_attrs(Attrs)] ++ "/>\n" ++ Accum;
+	[io_lib:format("<~s",[Element_name]), [encode_attrs(Attrs)], "/>\n", Accum];
 
 % for a list of elements
 encode_element(A_List, Accum) when is_list(A_List) ->
@@ -354,17 +369,24 @@ default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
 %%% end of duexml module.
 
 get_package_primary_xml(RPMD) ->
-	"<package type=\"rpm\">\n" ++ 
-	encode_element(rpm_get_name(RPMD)) ++
-	encode_element(rpm_get_arch(RPMD)) ++
-	encode_element(rpm_get_version(RPMD)) ++
-	encode_element(rpm_get_checksum(RPMD)) ++
-	encode_element(rpm_get_summary(RPMD)) ++
-	encode_element(rpm_get_description(RPMD)) ++
-	encode_element(rpm_get_packager(RPMD)) ++
-	encode_element(rpm_get_url(RPMD)) ++
-	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}) ++
-	encode_element({size,[{package, [rpm_get_file_parameter_by_id(RPMD, size)]},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}).
+	["<package type=\"rpm\">\n", 
+	encode_element(rpm_get_name(RPMD)),
+	encode_element(rpm_get_arch(RPMD)),
+	encode_element(rpm_get_version(RPMD)),
+	encode_element(rpm_get_checksum(RPMD)),
+	encode_element(rpm_get_summary(RPMD)),
+	encode_element(rpm_get_description(RPMD)),
+	encode_element(rpm_get_packager(RPMD)),
+	encode_element(rpm_get_url(RPMD)),
+	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
+	encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
+	encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
+	encode_element(rpm_get_license(RPMD)),
+	encode_element(rpm_get_vendor(RPMD)),
+	encode_element(rpm_get_group(RPMD)),
+	encode_element(rpm_get_buildhost(RPMD)),
+	encode_element(rpm_get_header_range(RPMD))
+	].
 
 
 
