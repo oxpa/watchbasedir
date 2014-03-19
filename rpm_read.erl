@@ -185,7 +185,7 @@ join_filelist(Dir_index, Base_names, Directories)
 
 join_filelist(Dir_index, Base_names, Directories) -> 
 		% there is no special meaning for [] here. It's a convience element for xml encoding later
-        lists:zipwith(fun(A,B)-> {'file', [], [lists:nth(A+1, Directories)|B]} end, Dir_index,  Base_names).
+        lists:zipwith(fun(A,B)-> {'file', [], [ lists:nth(list_to_integer(A)+1, Directories), B ]} end, Dir_index,  Base_names).
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
@@ -201,7 +201,10 @@ is_sublist(Sublist,L=[_H|T]) ->
 	lists:prefix(Sublist,L) orelse is_sublist(Sublist,T).
 
 rpm_get_primary_filelist(RPM_DESC) ->
-	lists:filter( fun({_,_,Name}) -> lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
+	lists:filter( fun({_,_,[Name,_]}) -> binary:match(Name, <<"/etc/">>) == {0,4} orelse
+									 Name == <<"/usr/lib/sendmail">> orelse
+									 binary:match(Name, <<"bin/">>) /= nomatch end,
+								%lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
 				 rpm_get_filelist(RPM_DESC)).
 
 rpm_get_name(RPM_DESC)-> {name, [], rpm_get_header_parameter_by_id(RPM_DESC, 1000)}.
@@ -238,7 +241,7 @@ rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_
 rpm_get_src(RPM_DESC) -> {'rpm:sourcerpm',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
 rpm_get_header_range(RPM_DESC) -> {'rpm:header-range',rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
 
-rpm_normalize_version([]) -> [];
+rpm_normalize_version(<<>>) -> [];
 rpm_normalize_version(Version) ->
 	 case re:split(Version,"[:-]") of 
 		[A,B,C] -> [{epoch,A},{ver,B},{rel,C}];
@@ -247,7 +250,7 @@ rpm_normalize_version(Version) ->
 
 
 
-rpm_get_provides(RPM_DESC) -> {provides, lists:zipwith3( fun(Name,Flags, Version) ->
+rpm_get_provides(RPM_DESC) -> {provides, [], lists:zipwith3( fun(Name,Flags, Version) ->
 								{'rpm:entry',[{name,Name},
 											rpm_sense_values_to_text(Flags),
 											rpm_normalize_version(Version)]} end,
@@ -255,8 +258,8 @@ rpm_get_provides(RPM_DESC) -> {provides, lists:zipwith3( fun(Name,Flags, Version
 								rpm_get_header_parameter_by_id(RPM_DESC, 1112),
 								rpm_get_header_parameter_by_id(RPM_DESC, 1113)
 								)}.
-rpm_get_requires(RPM_DESC) -> {requires, 
-									lists:filter( fun({'rpm:entry',[{name,Name}|_]}) -> not lists:prefix("rpmlib(", Name)  end, 
+rpm_get_requires(RPM_DESC) -> {requires, [],
+									lists:filter( fun({'rpm:entry',[{name,Name}|_]}) -> nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
 										lists:zipwith3( fun(Name,Flags, Version) -> 
 											{'rpm:entry',[{name,Name},
 												rpm_sense_values_to_text(Flags),
@@ -265,7 +268,7 @@ rpm_get_requires(RPM_DESC) -> {requires,
 											rpm_get_header_parameter_by_id(RPM_DESC, 1048),
 											rpm_get_header_parameter_by_id(RPM_DESC, 1050)
 								))}.
-rpm_get_conflicts(RPM_DESC) -> {conflicts, lists:zipwith3( fun(Name,Flags, Version) ->
+rpm_get_conflicts(RPM_DESC) -> {conflicts, [], lists:zipwith3( fun(Name,Flags, Version) ->
                                 {'rpm:entry',[{name,Name},
                                             rpm_sense_values_to_text(Flags),
                                             rpm_normalize_version(Version)]} end,
@@ -346,6 +349,14 @@ encode_attrs(Attrs, Accum) ->
 				Attrs).
 
 
+% conventional functions for nested elements
+encode_element({Element_name, Attrs, Elements=[{B, C, _}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
+	Text = encode_element(Elements),
+	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">\n", Text, io_lib:format("</~s", [Element_name]),">\n", Accum];
+encode_element({Element_name, Attrs, Elements=[{B, C}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
+	Text = encode_element(Elements),
+	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">\n", Text, io_lib:format("</~s", [Element_name]),">\n", Accum];
+
 % a regular element
 encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
 	%TODO: remove compiling REs from here
@@ -358,10 +369,12 @@ encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(
 	%io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]) ++ Accum;
 	[io_lib:format("<~s",[Element_name]), [encode_attrs(Attrs)], "/>\n", Accum];
 
+
 % for a list of elements
 encode_element(A_List, Accum) when is_list(A_List) ->
 	lists:foldr( fun(Elem, Acc) -> encode_element(Elem, Acc) end, Accum, A_List).
 
+% an entry point for all encode_element functions
 encode_element(Element) -> encode_element(Element, []).
 
 default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
@@ -381,11 +394,18 @@ get_package_primary_xml(RPMD) ->
 	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
 	encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
 	encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
+	<<"<format>">>,
 	encode_element(rpm_get_license(RPMD)),
 	encode_element(rpm_get_vendor(RPMD)),
 	encode_element(rpm_get_group(RPMD)),
 	encode_element(rpm_get_buildhost(RPMD)),
-	encode_element(rpm_get_header_range(RPMD))
+	encode_element(rpm_get_header_range(RPMD)),
+	encode_element(rpm_get_provides(RPMD)),
+	encode_element(rpm_get_requires(RPMD)),
+    encode_element(rpm_get_conflicts(RPMD)),
+	encode_element(rpm_get_primary_filelist(RPMD)),
+	<<"</format>\n">>,
+	<<"</package>\n">>
 	].
 
 
