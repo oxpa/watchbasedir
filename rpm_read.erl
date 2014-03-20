@@ -211,8 +211,8 @@ rpm_get_name(RPM_DESC)-> {name, [], rpm_get_header_parameter_by_id(RPM_DESC, 100
 rpm_get_arch(RPM_DESC)-> {arch, [], rpm_get_header_parameter_by_id(RPM_DESC, 1022)}.
 rpm_get_version(RPM_DESC) -> 
 	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003, ["0"])},
-				{version, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
-				{release, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
+				{ver, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
+				{rel, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
 			  ]}.
 rpm_get_summary(RPM_DESC) -> {summary,[],rpm_get_header_parameter_by_id(RPM_DESC, 1004)}.
 rpm_get_checksum(F, MdContext, ShaContext) ->
@@ -250,37 +250,41 @@ rpm_normalize_version(Version) ->
 
 
 
-rpm_get_provides(RPM_DESC) -> {provides, [], lists:zipwith3( fun(Name,Flags, Version) ->
-								{'rpm:entry',[{name,Name},
-											rpm_sense_values_to_text(Flags),
-											rpm_normalize_version(Version)]} end,
-								rpm_get_header_parameter_by_id(RPM_DESC, 1047),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1112),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1113)
-								)}.
-rpm_get_requires(RPM_DESC) -> {requires, [],
-									lists:filter( fun({'rpm:entry',[{name,Name}|_]}) -> nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
-										lists:zipwith3( fun(Name,Flags, Version) -> 
-											{'rpm:entry',[{name,Name},
-												rpm_sense_values_to_text(Flags),
-												rpm_normalize_version(Version)]} end,
-											rpm_get_header_parameter_by_id(RPM_DESC, 1049),
-											rpm_get_header_parameter_by_id(RPM_DESC, 1048),
-											rpm_get_header_parameter_by_id(RPM_DESC, 1050)
-								))}.
-rpm_get_conflicts(RPM_DESC) -> {conflicts, [], lists:zipwith3( fun(Name,Flags, Version) ->
-                                {'rpm:entry',[{name,Name},
-                                            rpm_sense_values_to_text(Flags),
-                                            rpm_normalize_version(Version)]} end,
-								rpm_get_header_parameter_by_id(RPM_DESC, 1054),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1053),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1055)
-								)}.
-rpm_get_obsoletes(RPM_DESC) -> {obsoletes, lists:zip3( 
-								rpm_get_header_parameter_by_id(RPM_DESC, 1090),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1114),
-								rpm_get_header_parameter_by_id(RPM_DESC, 1115)
-								)}.
+zipwith3_wrapper(RPM_DESC, {ID1, ID2, ID3}) -> 
+	lists:zipwith3( fun(Name,Flags, Version) ->								
+						{'rpm:entry',[{name,Name},
+                        rpm_sense_values_to_text(Flags),
+                        rpm_normalize_version(Version)]} end,
+					rpm_get_header_parameter_by_id(RPM_DESC, ID1),
+					rpm_get_header_parameter_by_id(RPM_DESC, ID2),
+					rpm_get_header_parameter_by_id(RPM_DESC, ID3)
+	   			  ).
+	  
+rpm_get_provides(RPM_DESC) -> 
+	case zipwith3_wrapper(RPM_DESC, {1047, 1112, 1113}) of
+					[] -> [];
+		Non_empty_list -> {provides, [], Non_empty_list}
+	end.
+							
+rpm_get_requires(RPM_DESC) -> 
+	case lists:filter(	fun({'rpm:entry',[{name,Name}|_]}) -> 
+							nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
+						zipwith3_wrapper(RPM_DESC, {1049, 1048, 1050})) of
+					[] -> [];
+		Non_empty_list -> {requires, [], Non_empty_list}
+	end.
+
+rpm_get_conflicts(RPM_DESC) -> 
+	case zipwith3_wrapper(RPM_DESC, {1054, 1053, 1055}) of
+					[] -> [];
+		Non_empty_list -> {conflicts, [], Non_empty_list}
+	end.
+
+rpm_get_obsoletes(RPM_DESC) -> 
+	case zipwith3_wrapper(RPM_DESC, {1090, 1114, 1115}) of
+					[] -> [];
+		Non_empty_list -> {obsoletes, [], Non_empty_list}
+	end.
 
 rpm_sense_values_to_text(Value) when is_list(Value) ->
 	rpm_sense_values_to_text(list_to_integer(Value));
@@ -394,15 +398,17 @@ get_package_primary_xml(RPMD) ->
 	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
 	encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
 	encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
-	<<"<format>">>,
+	<<"<format>\n">>,
 	encode_element(rpm_get_license(RPMD)),
 	encode_element(rpm_get_vendor(RPMD)),
 	encode_element(rpm_get_group(RPMD)),
 	encode_element(rpm_get_buildhost(RPMD)),
+	encode_element(rpm_get_src(RPMD)),
 	encode_element(rpm_get_header_range(RPMD)),
 	encode_element(rpm_get_provides(RPMD)),
 	encode_element(rpm_get_requires(RPMD)),
     encode_element(rpm_get_conflicts(RPMD)),
+    encode_element(rpm_get_obsoletes(RPMD)),
 	encode_element(rpm_get_primary_filelist(RPMD)),
 	<<"</format>\n">>,
 	<<"</package>\n">>
