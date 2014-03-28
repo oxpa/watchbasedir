@@ -32,7 +32,7 @@ round_offset_by_eight(F,Off) ->
 
 %% A helper for future integration with lager or other logger
 debug(Message,Args) ->
-	io:format(Message,Args),
+	%io:format(Message,Args),
 	true.
 
 %% A function used in shell to test module.
@@ -207,8 +207,8 @@ rpm_get_primary_filelist(RPM_DESC) ->
 								%lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
 				 rpm_get_filelist(RPM_DESC)).
 
-rpm_get_name(RPM_DESC)-> {name, [], rpm_get_header_parameter_by_id(RPM_DESC, 1000)}.
-rpm_get_arch(RPM_DESC)-> {arch, [], rpm_get_header_parameter_by_id(RPM_DESC, 1022)}.
+rpm_get_name(RPM_DESC)-> rpm_get_header_parameter_by_id(RPM_DESC, 1000).
+rpm_get_arch(RPM_DESC)-> rpm_get_header_parameter_by_id(RPM_DESC, 1022).
 rpm_get_version(RPM_DESC) -> 
 	{version, [{epoch, rpm_get_header_parameter_by_id(RPM_DESC, 1003, ["0"])},
 				{ver, rpm_get_header_parameter_by_id(RPM_DESC, 1001)},
@@ -240,15 +240,21 @@ rpm_get_group(RPM_DESC) -> {'rpm:group',[],[rpm_get_header_parameter_by_id(RPM_D
 rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
 rpm_get_src(RPM_DESC) -> {'rpm:sourcerpm',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
 rpm_get_header_range(RPM_DESC) -> {'rpm:header-range',rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
+rpm_get_files_md5(RPM_DESC) -> rpm_get_header_parameter_by_id(RPM_DESC, 1035).
+rpm_get_files_with_types(RPM_DESC) -> lists:zipwith(fun ({_,_,Name},<<>>) -> {file,[{type,dir}],[Name]}; (A,_) -> A end, rpm_get_filelist(RPM_DESC), rpm_get_files_md5(RPM_DESC)).
+
 
 rpm_normalize_version(<<>>) -> [];
-rpm_normalize_version(Version) ->
-	 case re:split(Version,"[:-]") of 
-		[A,B,C] -> [{epoch,A},{ver,B},{rel,C}];
-		[B,C] -> [{epoch, "0"},{ver,B},{rel,C}]
-	 end.
+rpm_normalize_version(A) -> helper_find_epoch(A, <<>>).
 
+helper_find_epoch(<<>>,				Acc)	-> [{epoch,"0"},{version,Acc}];
+helper_find_epoch(<<":",T/binary>>, Acc)	-> helper_find_version(T,<<>>, [{epoch, Acc}]);
+helper_find_epoch(<<"-",T/binary>>, Acc)	-> [{ver,Acc},{rel,T}];
+helper_find_epoch(<<H,T/binary>>,	Acc)	-> helper_find_epoch(T, <<Acc/binary,H>>).
 
+helper_find_version(<<>>,Acc,Return_value) -> [{ver,Acc}, Return_value];
+helper_find_version(<<"-",T/binary>>,Acc, Return_value) -> [Return_value,{ver,Acc},{rel,T}].
+	
 
 zipwith3_wrapper(RPM_DESC, {ID1, ID2, ID3}) -> 
 	lists:zipwith3( fun(Name,Flags, Version) ->								
@@ -316,7 +322,7 @@ rpm_sense_values_to_text(Value) when is_binary(Value) ->
 		Main_flags == 12	-> {flags, "GE"};
 		true				-> []
 	end,
-	[Main_flags_value|Pre_Value].
+	[Main_flags_value,Pre_Value].
 
 
 %%% XML part. Should be placed into a separate file later
@@ -346,7 +352,7 @@ encode_attrs(Attrs, Accum) ->
 	REs = xml_compiled_REs(),
 	lists:foldr(fun
 					%({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
-					({Atom,Value}, Acc) -> %debug("encoding ~p |~p|~n",[Atom,Value]), 
+					({Atom,Value}, Acc) -> debug("encoding ~p |~p|~n",[Atom,Value]), 
 											[[" "], io_lib:format("~s",[Atom]), ["=\""], [escape_chars(Value,REs)], ["\""], Acc]; 
 					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
@@ -387,8 +393,8 @@ default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
 
 get_package_primary_xml(RPMD) ->
 	["<package type=\"rpm\">\n", 
-	encode_element(rpm_get_name(RPMD)),
-	encode_element(rpm_get_arch(RPMD)),
+	encode_element({name, [], [rpm_get_name(RPMD)]}),
+	encode_element({arch,[],[rpm_get_arch(RPMD)]}),
 	encode_element(rpm_get_version(RPMD)),
 	encode_element(rpm_get_checksum(RPMD)),
 	encode_element(rpm_get_summary(RPMD)),
@@ -414,8 +420,12 @@ get_package_primary_xml(RPMD) ->
 	<<"</package>\n">>
 	].
 
-
-
+get_package_filelist_xml(RPMD) -> 
+	encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+			[rpm_get_version(RPMD),
+			 rpm_get_files_with_types(RPMD)
+			]
+	}).	
 
 
 
