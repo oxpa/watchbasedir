@@ -57,7 +57,7 @@ read_rpm(RPM) ->
 		#rpm{filename=RPM, 
 			 lead=Lead, 
 			signature=Signature, 
-			header=[{header_range,[{start,Header_start},{'end',Header_end}]}|Header], 
+			header=[{href,RPM}|[{header_range,[{start,Header_start},{'end',Header_end}]}|Header]], 
 			fileprops=Fileprops, 
 			checksum=Checksum}.
 		
@@ -133,6 +133,7 @@ read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_ta
 	{ok, D} = file:read(F, Index#rpm_tag_index.num_of_entries * Multiplier),
 	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
 	read_rpm_index_value(F, Tail, Max_Offset, {Off + Index#rpm_tag_index.num_of_entries * Multiplier, [D|Data]});
+
 % read a "simple" value which size can be calculated using Index information.
 read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type < 6  ->
 	%Off=Index#rpm_sig_index.offset,
@@ -171,8 +172,8 @@ rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
 	RPM_DESC#rpm.checksum;
 rpm_get_checksum(Filename) ->
 	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
-	ShaContext = crypto:sha_init(),
-	MdContext = crypto:md5_init(),
+	ShaContext = crypto:hash_init(sha256),
+	MdContext = crypto:hash_init(md5),
 	rpm_get_checksum(F, MdContext, ShaContext).
 
 %% filelist is in 3 indexes: basenames, directories and "a link" between them, dir index.
@@ -181,7 +182,7 @@ rpm_get_checksum(Filename) ->
 %% if at least on of these arrays are not defined - it's an RPM without files (e.g. meta package with reqs only).
 
 join_filelist(Dir_index, Base_names, Directories) 
-	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> {'file',''};
+	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> [];
 
 join_filelist(Dir_index, Base_names, Directories) -> 
 		% there is no special meaning for [] here. It's a convience element for xml encoding later
@@ -220,9 +221,10 @@ rpm_get_checksum(F, MdContext, ShaContext) ->
 	% my hex is from erlang@c.j.r. It's fast and simple.
 	case file:read(F, 4096) of
 		eof -> {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
-						[{type, sha},{pkgid,'YES'}], bin_to:hex(crypto:sha_final(ShaContext))};
-		{ok, Data} -> rpm_get_checksum(F, crypto:md5_update(MdContext,Data), crypto:sha_update(ShaContext,Data))
+						[{type, sha256},{pkgid,'YES'}], bin_to:hex(crypto:hash_final(ShaContext))};
+		{ok, Data} -> rpm_get_checksum(F, crypto:hash_update(MdContext,Data), crypto:hash_update(ShaContext,Data))
 	end.
+
 rpm_get_description(RPM_DESC) -> {description, [], rpm_get_header_parameter_by_id(RPM_DESC, 1005)}.
 rpm_get_packager(RPM_DESC) -> {packager, [], rpm_get_header_parameter_by_id(RPM_DESC, 1015)}.
 rpm_get_license(RPM_DESC) -> {'rpm:license',[],rpm_get_header_parameter_by_id(RPM_DESC, 1014)}.
@@ -233,8 +235,7 @@ rpm_get_filetime(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, mtim
 rpm_get_buildtime(RPM_DESC) -> {build,rpm_get_header_parameter_by_id(RPM_DESC, 1006)}.
 rpm_get_archive_size(RPM_DESC) -> {archive,rpm_get_signature_parameter_by_id(RPM_DESC, 1007)}.
 rpm_get_installed_size(RPM_DESC) -> {installed,rpm_get_header_parameter_by_id(RPM_DESC, 1009)}.
-%location href
-%calculated relative package path
+rpm_get_location(RPM_DESC) -> {location, [{href,rpm_get_header_parameter_by_id(RPM_DESC, href)}]}.
 rpm_get_vendor(RPM_DESC) -> {'rpm:vendor',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
 rpm_get_group(RPM_DESC) -> {'rpm:group',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1016)]}.
 rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
@@ -253,7 +254,8 @@ helper_find_epoch(<<"-",T/binary>>, Acc)	-> [{ver,Acc},{rel,T}];
 helper_find_epoch(<<H,T/binary>>,	Acc)	-> helper_find_epoch(T, <<Acc/binary,H>>).
 
 helper_find_version(<<>>,Acc,Return_value) -> [{ver,Acc}, Return_value];
-helper_find_version(<<"-",T/binary>>,Acc, Return_value) -> [Return_value,{ver,Acc},{rel,T}].
+helper_find_version(<<"-",T/binary>>,Acc, Return_value) -> [Return_value,{ver,Acc},{rel,T}];
+helper_find_version(<<H,T/binary>>,Acc, Return_value) -> helper_find_version(T,<<Acc/binary,H>>, Return_value).
 	
 
 zipwith3_wrapper(RPM_DESC, {ID1, ID2, ID3}) -> 
@@ -332,6 +334,8 @@ rpm_get_chagelog_entries(RPMD) ->
 				).
 
 
+get_package_id(RPMD) ->
+	{_,_,Id}=rpm_get_checksum(RPMD), Id.
 
 get_package_primary_xml(RPMD) ->
 	["<package type=\"rpm\">\n", 
@@ -345,7 +349,7 @@ get_package_primary_xml(RPMD) ->
 	duexml:encode_element(rpm_get_url(RPMD)),
 	duexml:encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
 	duexml:encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
-	duexml:encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
+	duexml:encode_element(rpm_get_location(RPMD)),
 	<<"<format>\n">>,
 	duexml:encode_element(rpm_get_license(RPMD)),
 	duexml:encode_element(rpm_get_vendor(RPMD)),
@@ -363,7 +367,7 @@ get_package_primary_xml(RPMD) ->
 	].
 
 get_package_filelist_xml(RPMD) -> 
-	duexml:encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+	duexml:encode_element({package,[{pkgid, get_package_id(RPMD)}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
 			[rpm_get_version(RPMD),
 			 rpm_get_files_with_types(RPMD)
 			]
@@ -371,7 +375,7 @@ get_package_filelist_xml(RPMD) ->
 
 
 get_package_other_xml(RPMD) ->
-    duexml:encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+    duexml:encode_element({package,[{pkgid, get_package_id(RPMD)}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
 						[rpm_get_version(RPMD),
 						lists:reverse(lists:sublist(rpm_get_chagelog_entries(RPMD),10))
 						]
@@ -383,8 +387,43 @@ get_package_other_xml(RPMD) ->
 
 
 
+generate_repo(DirName) ->
 
+	{ok,DirList} = file:list_dir(DirName),
+	RPMDS=lists:filtermap( fun(Elem) -> 
+						case lists:suffix(".rpm",Elem) of
+							true -> {true, read_rpm(Elem)};
+							false -> false
+						end end,
+					DirList),
+	generate_primary_xml(RPMDS,filename:join([DirName,"primary.xml"])),
+	generate_filelist_xml(RPMDS,filename:join([DirName,"filelist.xml"])),
+	generate_other_xml(RPMDS,filename:join([DirName,"other.xml"])).
 
+generate_primary_xml(RPMDS,Filename) ->
+	{ok,Primary}=file:open(Filename, [write]),
+	file:write(Primary, [ "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<metadata xmlns=\"http://linux.duke.edu/metadata/common\"",
+						  " xmlns:rpm=\"http://linux.duke.edu/metadata/rpm\" packages=\"",
+							integer_to_list(length(RPMDS)),"\">\n"]),
+	lists:map(fun(Elem) -> io:format("~s~n",[rpm_get_header_parameter_by_id(Elem, href)]),file:write(Primary,[get_package_primary_xml(Elem)]) end, RPMDS),
+	file:write(Primary,["</metadata>"]),
+	file:close(Primary).
+
+generate_filelist_xml(RPMDS,Filename ) ->
+	{ok,Filelist}=file:open(Filename, [write]),
+	file:write(Filelist, ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<filelists xmlns=\"http://linux.duke.edu/metadata/filelists\" packages=\"",
+							integer_to_list(length(RPMDS)),"\">\n"]),
+	lists:map(fun(Elem) -> file:write(Filelist,[get_package_filelist_xml(Elem)]) end, RPMDS),
+	file:write(Filelist,["</filelist>"]),
+	file:close(Filelist).
+
+generate_other_xml(RPMDS, Filename) ->
+	{ok,Other}=file:open(Filename, [write]),
+	file:write(Other,["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<otherdata xmlns=\"http://linux.duke.edu/metadata/other\" packages=\"",
+						integer_to_list(length(RPMDS)),"\">\n"]),
+	lists:map(fun(Elem) -> file:write(Other,[get_package_filelist_xml(Elem)]) end, RPMDS),
+	file:write(Other,["</otherdata>"]),
+	file:close(Other).
 
 
 
