@@ -324,6 +324,14 @@ rpm_sense_values_to_text(Value) when is_binary(Value) ->
 	end,
 	[Main_flags_value,Pre_Value].
 
+rpm_get_chagelog_entries(RPMD) ->
+	lists:zipwith3( fun (A,B,C) -> {changelog,[{author,A},{date,B}], [C]} end,
+					rpm_read:rpm_get_header_parameter_by_id(RPMD,1081),
+					rpm_read:rpm_get_header_parameter_by_id(RPMD,1080),
+					rpm_read:rpm_get_header_parameter_by_id(RPMD,1082)
+				).
+
+
 
 %%% XML part. Should be placed into a separate file later
 %-module("duexml"). %damn useless erlang xml encoder ;)
@@ -428,7 +436,13 @@ get_package_filelist_xml(RPMD) ->
 	}).	
 
 
-
+get_package_other_xml(RPMD) ->
+    encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+						[rpm_get_version(RPMD),
+						lists:reverse(lists:sublist(rpm_get_chagelog_entries(RPMD),10))
+						]
+					}
+				  ).
 
 
 
