@@ -333,103 +333,37 @@ rpm_get_chagelog_entries(RPMD) ->
 
 
 
-%%% XML part. Should be placed into a separate file later
-%-module("duexml"). %damn useless erlang xml encoder ;)
-%
-
-xml_compiled_REs() ->
-	% {RE,Replacement}
-	REs = [{"&", "\\&amp;"}, {"\"","\\&quot;"}, {"'","\\&apos;"}, {"<","\\&lt;"}, {">","\\&gt;"}],
-	lists:foldr(fun({RE,Repl},Acc) -> {ok, RE_C} = re:compile(RE), [{RE_C,Repl}|Acc] end, [], REs).
-
-
-escape_chars(Text, Acc) when is_atom(Text) ->
-		escape_chars(io_lib:format("~s", [Text]), Acc);
-escape_chars(Text, Acc) when is_integer(Text) ->
-		escape_chars(io_lib:format("~b", [Text]), Acc);
-escape_chars(Text, []) -> Text;
-escape_chars(Text, [{Re,Repl}|Replacements]) ->
-	escape_chars(re:replace(Text, Re, Repl,[global]), Replacements).
-
-
-encode_attrs(Attrs) ->
-	encode_attrs(Attrs, []).
-encode_attrs([], Accum) -> Accum;
-encode_attrs(Attrs, Accum) ->
-	%TODO:remove compiling REs from here
-	REs = xml_compiled_REs(),
-	lists:foldr(fun
-					%({Atom,Value}, Acc) -> [io_lib:format(' ~s="~s"',[Atom,escape_chars(Value,REs)])|Acc]; 
-					({Atom,Value}, Acc) -> debug("encoding ~p |~p|~n",[Atom,Value]), 
-											[[" "], io_lib:format("~s",[Atom]), ["=\""], [escape_chars(Value,REs)], ["\""], Acc]; 
-					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
-				Accum, 
-				Attrs).
-
-
-% conventional functions for nested elements
-encode_element({Element_name, Attrs, Elements=[{B, C, _}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
-	Text = encode_element(Elements),
-	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">\n", Text, io_lib:format("</~s", [Element_name]),">\n", Accum];
-encode_element({Element_name, Attrs, Elements=[{B, C}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
-	Text = encode_element(Elements),
-	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">\n", Text, io_lib:format("</~s", [Element_name]),">\n", Accum];
-
-% a regular element
-encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
-	%TODO: remove compiling REs from here
-	REs = xml_compiled_REs(),
-	%io_lib:format("<~s~s>~s</~s>~n", [Element_name, encode_attrs(Attrs), escape_chars(Text,REs), Element_name]) ++ Accum;
-	[io_lib:format("<~s", [Element_name]), [encode_attrs(Attrs)], ">", [escape_chars(Text,REs)], io_lib:format("</~s", [Element_name]),">\n", Accum];
-
-% a simple element
-encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
-	%io_lib:format("<~s~s/>~n", [Element_name, encode_attrs(Attrs)]) ++ Accum;
-	[io_lib:format("<~s",[Element_name]), [encode_attrs(Attrs)], "/>\n", Accum];
-
-
-% for a list of elements
-encode_element(A_List, Accum) when is_list(A_List) ->
-	lists:foldr( fun(Elem, Acc) -> encode_element(Elem, Acc) end, Accum, A_List).
-
-% an entry point for all encode_element functions
-encode_element(Element) -> encode_element(Element, []).
-
-default_start_xml() -> '<xml version="1.0" encoding="UTF-8"?>'.
-
-%%% end of duexml module.
-
 get_package_primary_xml(RPMD) ->
 	["<package type=\"rpm\">\n", 
-	encode_element({name, [], [rpm_get_name(RPMD)]}),
-	encode_element({arch,[],[rpm_get_arch(RPMD)]}),
-	encode_element(rpm_get_version(RPMD)),
-	encode_element(rpm_get_checksum(RPMD)),
-	encode_element(rpm_get_summary(RPMD)),
-	encode_element(rpm_get_description(RPMD)),
-	encode_element(rpm_get_packager(RPMD)),
-	encode_element(rpm_get_url(RPMD)),
-	encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
-	encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
-	encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
+	duexml:encode_element({name, [], [rpm_get_name(RPMD)]}),
+	duexml:encode_element({arch,[],[rpm_get_arch(RPMD)]}),
+	duexml:encode_element(rpm_get_version(RPMD)),
+	duexml:encode_element(rpm_get_checksum(RPMD)),
+	duexml:encode_element(rpm_get_summary(RPMD)),
+	duexml:encode_element(rpm_get_description(RPMD)),
+	duexml:encode_element(rpm_get_packager(RPMD)),
+	duexml:encode_element(rpm_get_url(RPMD)),
+	duexml:encode_element({time,[rpm_get_filetime(RPMD), rpm_get_buildtime(RPMD)]}),
+	duexml:encode_element({size,[{package, rpm_get_file_parameter_by_id(RPMD, size)},rpm_get_archive_size(RPMD),rpm_get_installed_size(RPMD)]}),
+	duexml:encode_element({location,[{href,"hrefTBD" }]}), %TODO: file href
 	<<"<format>\n">>,
-	encode_element(rpm_get_license(RPMD)),
-	encode_element(rpm_get_vendor(RPMD)),
-	encode_element(rpm_get_group(RPMD)),
-	encode_element(rpm_get_buildhost(RPMD)),
-	encode_element(rpm_get_src(RPMD)),
-	encode_element(rpm_get_header_range(RPMD)),
-	encode_element(rpm_get_provides(RPMD)),
-	encode_element(rpm_get_requires(RPMD)),
-    encode_element(rpm_get_conflicts(RPMD)),
-    encode_element(rpm_get_obsoletes(RPMD)),
-	encode_element(rpm_get_primary_filelist(RPMD)),
+	duexml:encode_element(rpm_get_license(RPMD)),
+	duexml:encode_element(rpm_get_vendor(RPMD)),
+	duexml:encode_element(rpm_get_group(RPMD)),
+	duexml:encode_element(rpm_get_buildhost(RPMD)),
+	duexml:encode_element(rpm_get_src(RPMD)),
+	duexml:encode_element(rpm_get_header_range(RPMD)),
+	duexml:encode_element(rpm_get_provides(RPMD)),
+	duexml:encode_element(rpm_get_requires(RPMD)),
+    duexml:encode_element(rpm_get_conflicts(RPMD)),
+    duexml:encode_element(rpm_get_obsoletes(RPMD)),
+	duexml:encode_element(rpm_get_primary_filelist(RPMD)),
 	<<"</format>\n">>,
 	<<"</package>\n">>
 	].
 
 get_package_filelist_xml(RPMD) -> 
-	encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+	duexml:encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
 			[rpm_get_version(RPMD),
 			 rpm_get_files_with_types(RPMD)
 			]
@@ -437,7 +371,7 @@ get_package_filelist_xml(RPMD) ->
 
 
 get_package_other_xml(RPMD) ->
-    encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
+    duexml:encode_element({package,[{pkgid, "get_id"}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
 						[rpm_get_version(RPMD),
 						lists:reverse(lists:sublist(rpm_get_chagelog_entries(RPMD),10))
 						]
