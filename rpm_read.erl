@@ -401,6 +401,8 @@ get_package_other_xml(RPMD) ->
 
 
 generate_repo(DirName) ->
+	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table]),
+	%ets:i(),
 	{ok,DirList} = file:list_dir(DirName),
 	RPMDS=lists:filtermap( fun(Elem) -> 
 						case lists:suffix(".rpm",Elem) of
