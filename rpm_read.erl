@@ -10,25 +10,20 @@
 -define(SIGNATURE, <<Magic:24,_Header_version:8,_Reserved:32,Index_count:32,Signature_bytes:32>>).
 -define(INDEX,<<Tag:32,Data_type:32,Offset:32,Num_of_entries:32>>).
 
-%% A helper function for C strings reading.
-%% It's almost for sure have to be rewritten
-read_till_zero(F, Max_Offset) -> read_till_zero(F, 1, Max_Offset ). 
-read_till_zero(F, Count, Max_Offset) -> read_till_zero(F, Count, Max_Offset, [], 0, <<>>).
-read_till_zero(_, 0, _, Strings, Offset , _ ) -> {ok, {Offset, lists:reverse(Strings)}};
-read_till_zero(F, Count, Max_Offset, Strings, Offset , Acc) when Offset =< Max_Offset ->
-	case file:read(F,1) of
-		{ok, <<0>>} -> read_till_zero(F, Count - 1, Max_Offset, [Acc|Strings], Offset + 1, <<>>);
-		{ok, Data} when is_binary(Data) -> 
-			           read_till_zero(F, Count, Max_Offset,  Strings, Offset + 1, <<Acc/binary,Data/binary>> )
-	end.
-
 %% One more helper function due to rpm header structure
 round_offset_by_eight(F,Off) ->
-	debug("current offset is ~p in file and ~B bytes read", [file:position(F,cur), Off]),
+	%debug("current offset is ~p in file and ~B bytes read", [file:position(F,cur), Off]),
 	case Off rem 8 of
 		0 -> file:position(F,cur);
 		_ -> file:position(F,{cur,8 - (Off rem 8)})
 	end.
+
+%String=lists:sublist((binary:split(Read_Data,<<0>>,[global])),Index#rpm_tag_index.num_of_entries),
+get_strings(Data, Count) -> get_strings(Data, Count, <<>>, []).
+get_strings(_Data, 0, _Str, Acc) -> lists:reverse(Acc);
+get_strings(<<0,Data/binary>>, Count, Str, Acc) -> get_strings(Data, Count-1, <<>>, [Str|Acc]);
+get_strings(<<C,Data/binary>>, Count, Str, Acc) -> get_strings(Data, Count, <<Str/binary,C>>, Acc).
+	
 
 %% A helper for future integration with lager or other logger
 debug(Message,Args) ->
@@ -45,19 +40,20 @@ on_load(File) ->
 read_rpm(RPM) ->
 		{ok,F} = file:open(RPM,[read, binary, read_ahead]),
 		{ok, Lead} = read_rpm_lead(F),
-		{ok, {header_iValues_length, Max_Offset},Indexes} = read_rpm_header(F),
+		{ok, {header_values_length, Max_Offset},Indexes} = read_rpm_header(F),
 		{ok, {SOff,Signature}} = read_rpm_header_data(F,Indexes, Max_Offset),
 		%% signature may end anywhere in the file. We should round the offset by 8 byte boundary
 		{ok, Header_start} = round_offset_by_eight(F,SOff),
-		{ok,{header_iValues_length, Max_Header_Offset}, Head_indexes} = read_rpm_header(F),
+		{ok,{header_values_length, Max_Header_Offset}, Head_indexes} = read_rpm_header(F),
 		{ok, {HOff,Header}} = read_rpm_header_data(F,Head_indexes, Max_Header_Offset),
 		{ok, Header_end} = round_offset_by_eight(F,HOff),
 		{ok, Fileprops} = file:read_file_info(RPM), 
 		Checksum = rpm_get_checksum(RPM),
+		file:close(F),
 		#rpm{filename=RPM, 
 			 lead=Lead, 
 			signature=Signature, 
-			header=[{href,RPM}|[{header_range,[{start,Header_start},{'end',Header_end}]}|Header]], 
+			header=[{href,RPM}|[{header_range,[{start,io_lib:write(Header_start)},{'end',io_lib:write(Header_end)}]}|Header]], 
 			fileprops=Fileprops, 
 			checksum=Checksum}.
 		
@@ -74,21 +70,21 @@ read_rpm_lead(F) ->
 		true -> {error, "Wrong LEAD magic."}
 	end.
 
-read_rpm_header(F) ->
+read_rpm_header(FileName) ->
     Header_length=16,
-    {ok,Data} = file:read(F,Header_length),
-	debug("~w",[Data]),
+    {ok,Data} = file:read(FileName,Header_length),
+	%debug("~w",[Data]),
 	?SIGNATURE = Data, 
 	% 9350632 = 16#8eade8 - header magic number
 	Magic = 9350632,
-	debug("Read magic: ~.16B , will read ~B index records with  ~B bytes of signature~n",[Magic,Index_count,Signature_bytes]),
-	read_rpm_index_entry(F,Index_count, Signature_bytes).
+	%debug("Read magic: ~.16B , will read ~B index records with  ~B bytes of signature~n",[Magic,Index_count,Signature_bytes]),
+	read_rpm_index_entry(FileName,Index_count, Signature_bytes).
 	
-read_rpm_index_entry(F, N, Max_Offset) 	-> read_rpm_index_entry(F,N, Max_Offset, []).
-read_rpm_index_entry(_, 0, Max_Offset, Acc) ->
+read_rpm_index_entry(FileName, N, Max_Offset) 	-> read_rpm_index_entry(FileName,N, Max_Offset, []).
+read_rpm_index_entry(_, 0, Max_Offset, Acc)		->
 	%% return sorted by offset index list from Acc 
 	%% we'll read index values in this order later.
-	{ok, {header_iValues_length, Max_Offset},
+	{ok, {header_values_length, Max_Offset},
 	 lists:sort(
 		fun(A,B) when 
 			A#rpm_tag_index.offset =< B#rpm_tag_index.offset	-> true; 
@@ -96,42 +92,45 @@ read_rpm_index_entry(_, 0, Max_Offset, Acc) ->
 		end
 		, Acc)
 	};
-read_rpm_index_entry(F, Num_of_indexes, Max_Offset, Acc) when Num_of_indexes > 0 -> 
+read_rpm_index_entry(FileName, Num_of_indexes, Max_Offset, Acc) when Num_of_indexes > 0 -> 
 	%% index is 4 fields of 4 bytes. Read them recursevly. Then proceed to data reading
     Index_length=16,
-    {ok, Data} = file:read(F,Index_length),
-	?INDEX=Data,
-	debug("read tag ~B, ~B -th type at offset ~B. ~B entries.~n",[Tag, Data_type, Offset, Num_of_entries]),
-	read_rpm_index_entry(F, Num_of_indexes - 1, Max_Offset, [#rpm_tag_index{tag=Tag,data_type=Data_type, offset=Offset,num_of_entries=Num_of_entries}|Acc]).
+    {ok, Data} = file:read(FileName,Index_length*Num_of_indexes),
+	Indexes = [#rpm_tag_index{tag=Tag,data_type=Data_type, offset=Offset,num_of_entries=Num_of_entries} ||
+								 <<Tag:32,Data_type:32,Offset:32,Num_of_entries:32>> <= Data ],
+	
+	read_rpm_index_entry(FileName, 0, Max_Offset, Indexes).
 	
 
 read_rpm_header_data(F, Indexes, Max_Offset) -> read_rpm_index_value(F, Indexes, Max_Offset, {0, []}).
 
-
 % reading ended. Return.
 read_rpm_index_value(_, [], _, {Off, Data}) -> 
-	debug("read tag data till ~B",[Off]),
+	%debug("read tag data till ~B",[Off]),
 	{ok, {Off,Data}};
 
 % read some data till next tag boundary
 read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off,Data}) when Index#rpm_tag_index.offset - Off /= 0, Off =< Max_Offset -> 
-	debug("Skipping through from ~B to ~B ~n",[Off, Index#rpm_tag_index.offset]),
+	%debug("Skipping through from ~B to ~B ~n",[Off, Index#rpm_tag_index.offset]),
 	{ok, _} = file:read(F,Index#rpm_tag_index.offset - Off),
 	read_rpm_index_value(F, [Index|Tail], Max_Offset, {Index#rpm_tag_index.offset,Data});
 
 % going to read a 6-th data type - a string
 % or a list of string (8 and 9). 7 is binary and is read the other way
 read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type == 6; Index#rpm_tag_index.data_type > 7 ->
-	{ok,{Offset,String}} =  read_till_zero(F, Index#rpm_tag_index.num_of_entries, Max_Offset ),
-	debug("Read ~B bytes starting from ~B ~n",[Offset,Off]),
+	[Head|_]= Tail,
+	{ok, Read_Data} = file:read(F, Head#rpm_tag_index.offset - Index#rpm_tag_index.offset),
+	% notice that empty fileds would be trimmed off here. Also, we may read some <<0>> padding here.
+	%String=get_strings(Read_Data,Index#rpm_tag_index.num_of_entries),
+	String=lists:sublist((binary:split(Read_Data,<<0>>,[global])),Index#rpm_tag_index.num_of_entries),
 	Tag_data = {Index#rpm_tag_index.tag, String},
-	read_rpm_index_value(F, Tail, Max_Offset, {Offset+Off,[Tag_data|Data]});
+	read_rpm_index_value(F, Tail, Max_Offset, {Head#rpm_tag_index.offset - Index#rpm_tag_index.offset +Off,[Tag_data|Data]});
 
 % a binary worth it's own implementation, cause doesn't require any transformation
 read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_tag_index.data_type == 7  ->
 	Multiplier = proplists:get_value(Index#rpm_tag_index.data_type, rpm_types_sizes()),
 	{ok, D} = file:read(F, Index#rpm_tag_index.num_of_entries * Multiplier),
-	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
+	%debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
 	read_rpm_index_value(F, Tail, Max_Offset, {Off + Index#rpm_tag_index.num_of_entries * Multiplier, [D|Data]});
 
 % read a "simple" value which size can be calculated using Index information.
@@ -139,10 +138,12 @@ read_rpm_index_value(F, [Index|Tail], Max_Offset, {Off, Data}) when Index#rpm_ta
 	%Off=Index#rpm_sig_index.offset,
 	Multiplier = proplists:get_value(Index#rpm_tag_index.data_type, rpm_types_sizes()),
 	{ok, D} = file:read(F, Index#rpm_tag_index.num_of_entries * Multiplier), 
-	debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
-	debug("~p,",[D]),
-	Tag_data = {Index#rpm_tag_index.tag, [ integer_to_list(Bin) || <<Bin:Multiplier/unit:8>> <= D ]},
-	debug("~w~n",[Tag_data]),
+	%debug("read ~B bytes by ~B bytes, starting from ~B~n",[Index#rpm_tag_index.num_of_entries * Multiplier, Multiplier, Off]),
+	%debug("~p,",[D]),
+	% integer_to_list is needed here, cause later in the code we are going to use it as a string, not an integer of any kind
+	%Tag_data = {Index#rpm_tag_index.tag, [ io_lib:write(Bin) || <<Bin:Multiplier/unit:8>> <= D ]},
+	Tag_data = {Index#rpm_tag_index.tag, [ Bin || <<Bin:Multiplier/unit:8>> <= D ]},
+	%debug("~w~n",[Tag_data]),
 	read_rpm_index_value(F, Tail, Max_Offset, {Off + Index#rpm_tag_index.num_of_entries * Multiplier, [Tag_data|Data]}).
 
 
@@ -164,8 +165,8 @@ rpm_get_signature_parameter_by_id(RPM_DESC, Id) ->
 rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
 	case Id of
 					% 719528*86400 is seconds from 1 Jan 0 to Epoch (1 Jan 1970)
-		mtime	-> calendar:datetime_to_gregorian_seconds(RPM_DESC#rpm.fileprops#file_info.mtime) - 719528*86400; 
-		size	-> integer_to_list( RPM_DESC#rpm.fileprops#file_info.size)
+		mtime	-> io_lib:write(calendar:datetime_to_gregorian_seconds(RPM_DESC#rpm.fileprops#file_info.mtime) - 719528*86400); 
+		size	-> io_lib:write( RPM_DESC#rpm.fileprops#file_info.size)
 	end.
 
 rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
@@ -186,7 +187,7 @@ join_filelist(Dir_index, Base_names, Directories)
 
 join_filelist(Dir_index, Base_names, Directories) -> 
 		% there is no special meaning for [] here. It's a convience element for xml encoding later
-        lists:zipwith(fun(A,B)-> {'file', [], [ lists:nth(list_to_integer(A)+1, Directories), B ]} end, Dir_index,  Base_names).
+        lists:zipwith(fun(A,B)-> {'file', [], [ <<(lists:nth(A+1, Directories))/binary, B/binary>> ]} end, Dir_index,  Base_names).
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
@@ -201,12 +202,22 @@ is_sublist(_Sublist,[]) -> false;
 is_sublist(Sublist,L=[_H|T]) ->
 	lists:prefix(Sublist,L) orelse is_sublist(Sublist,T).
 
+is_subbinary(_, <<>>) -> false;
+is_subbinary(Subbin, <<Subbin,_A/binary>>) -> true;
+is_subbinary(Subbin, <<_H,A/binary>>) -> is_subbinary(Subbin,A).
+
+
 rpm_get_primary_filelist(RPM_DESC) ->
-	lists:filter( fun({_,_,[Name,_]}) -> binary:match(Name, <<"/etc/">>) == {0,4} orelse
-									 Name == <<"/usr/lib/sendmail">> orelse
-									 binary:match(Name, <<"bin/">>) /= nomatch end,
+	lists:filter( fun ({_,_,[<<"/etc/",_Name/binary>>]}) -> true;
+					  ({_,_,[<<"/usr/lib/sendmail">>]}) -> true;
+					  ({_,_,[<<Name/binary>>]}) -> nomatch /= binary:match(<<"bin/">>,Name)
+				  end,
+				 rpm_get_files_with_types(RPM_DESC)).
+				 %rpm_get_filelist(RPM_DESC)).
+									%binary:match(Name, <<"/etc/">>) == {0,4} orelse
+									% Name == <<"/usr/lib/sendmail">> orelse
+									% binary:match(Name, <<"bin/">>) /= nomatch end,
 								%lists:prefix("/etc/",Name) orelse ("/usr/lib/sendmail" == Name) orelse is_sublist("bin/", Name) end, 
-				 rpm_get_filelist(RPM_DESC)).
 
 rpm_get_name(RPM_DESC)-> rpm_get_header_parameter_by_id(RPM_DESC, 1000).
 rpm_get_arch(RPM_DESC)-> rpm_get_header_parameter_by_id(RPM_DESC, 1022).
@@ -220,7 +231,7 @@ rpm_get_checksum(F, MdContext, ShaContext) ->
 	% there is no proper way of converting to textual hex.
 	% my hex is from erlang@c.j.r. It's fast and simple.
 	case file:read(F, 4096) of
-		eof -> {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
+		eof -> file:close(F), {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
 						[{type, sha256},{pkgid,'YES'}], bin_to:hex(crypto:hash_final(ShaContext))};
 		{ok, Data} -> rpm_get_checksum(F, crypto:hash_update(MdContext,Data), crypto:hash_update(ShaContext,Data))
 	end.
@@ -242,7 +253,7 @@ rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_
 rpm_get_src(RPM_DESC) -> {'rpm:sourcerpm',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
 rpm_get_header_range(RPM_DESC) -> {'rpm:header-range',rpm_get_header_parameter_by_id(RPM_DESC, header_range)}.
 rpm_get_files_md5(RPM_DESC) -> rpm_get_header_parameter_by_id(RPM_DESC, 1035).
-rpm_get_files_with_types(RPM_DESC) -> lists:zipwith(fun ({_,_,Name},<<>>) -> {file,[{type,dir}],[Name]}; (A,_) -> A end, rpm_get_filelist(RPM_DESC), rpm_get_files_md5(RPM_DESC)).
+rpm_get_files_with_types(RPM_DESC) -> lists:zipwith(fun ({_,_,Name},<<>>) -> {file,[{type,dir}],Name}; (A,_) -> A end, rpm_get_filelist(RPM_DESC), rpm_get_files_md5(RPM_DESC)).
 
 
 rpm_normalize_version(<<>>) -> [];
@@ -275,8 +286,10 @@ rpm_get_provides(RPM_DESC) ->
 	end.
 							
 rpm_get_requires(RPM_DESC) -> 
-	case lists:filter(	fun({'rpm:entry',[{name,Name}|_]}) -> 
-							nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
+	case lists:filter(	fun ({'rpm:entry',[{name,<<"rpmlib(",_Name/binary>>}|_]}) -> true;
+							({'rpm:entry',[{name,Name}|_]}) -> false
+						end, 
+							%nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
 						zipwith3_wrapper(RPM_DESC, {1049, 1048, 1050})) of
 					[] -> [];
 		Non_empty_list -> {requires, [], Non_empty_list}
@@ -388,7 +401,6 @@ get_package_other_xml(RPMD) ->
 
 
 generate_repo(DirName) ->
-
 	{ok,DirList} = file:list_dir(DirName),
 	RPMDS=lists:filtermap( fun(Elem) -> 
 						case lists:suffix(".rpm",Elem) of
@@ -404,24 +416,27 @@ generate_primary_xml(RPMDS,Filename) ->
 	{ok,Primary}=file:open(Filename, [write]),
 	file:write(Primary, [ "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<metadata xmlns=\"http://linux.duke.edu/metadata/common\"",
 						  " xmlns:rpm=\"http://linux.duke.edu/metadata/rpm\" packages=\"",
-							integer_to_list(length(RPMDS)),"\">\n"]),
-	lists:map(fun(Elem) -> io:format("~s~n",[rpm_get_header_parameter_by_id(Elem, href)]),file:write(Primary,[get_package_primary_xml(Elem)]) end, RPMDS),
+							io_lib:write(length(RPMDS)),"\">\n"]),
+	lists:foreach(fun(Elem) -> %io:format("~s~n",[rpm_get_header_parameter_by_id(Elem, href)]),
+							%io:format("~s~n", [io:write(get_package_primary_xml(Elem))]),
+						  file:write(Primary,get_package_primary_xml(Elem)) end, 
+			  RPMDS),
 	file:write(Primary,["</metadata>"]),
 	file:close(Primary).
 
 generate_filelist_xml(RPMDS,Filename ) ->
 	{ok,Filelist}=file:open(Filename, [write]),
 	file:write(Filelist, ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<filelists xmlns=\"http://linux.duke.edu/metadata/filelists\" packages=\"",
-							integer_to_list(length(RPMDS)),"\">\n"]),
-	lists:map(fun(Elem) -> file:write(Filelist,[get_package_filelist_xml(Elem)]) end, RPMDS),
+							io_lib:write(length(RPMDS)),"\">\n"]),
+	lists:foreach(fun(Elem) -> file:write(Filelist,[get_package_filelist_xml(Elem)]) end, RPMDS),
 	file:write(Filelist,["</filelist>"]),
 	file:close(Filelist).
 
 generate_other_xml(RPMDS, Filename) ->
 	{ok,Other}=file:open(Filename, [write]),
 	file:write(Other,["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<otherdata xmlns=\"http://linux.duke.edu/metadata/other\" packages=\"",
-						integer_to_list(length(RPMDS)),"\">\n"]),
-	lists:map(fun(Elem) -> file:write(Other,[get_package_filelist_xml(Elem)]) end, RPMDS),
+						io_lib:write(length(RPMDS)),"\">\n"]),
+	lists:foreach(fun(Elem) -> file:write(Other,[get_package_filelist_xml(Elem)]) end, RPMDS),
 	file:write(Other,["</otherdata>"]),
 	file:close(Other).
 
