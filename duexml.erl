@@ -53,7 +53,7 @@ encode_attrs(Attrs, Accum) ->
 												[]			->  Text=io_lib:format("~s",[Atom]), ets:insert(atoms, {Atom,Text});
 												[{Atom, T}]	->	Text=T
 											end,
-											[[" "], Text, ["=\""], [escape_chars(Value)], ["\""], Acc]; 
+											[[" ", Text, "=\"", [escape_chars(Value)], "\"" ] |Acc]; 
 					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
 				Attrs).
@@ -73,7 +73,7 @@ encode_element({Element_name, Attrs, Elements=[{B, C}|_]},Accum) when is_atom(El
 		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
 		[{Element_name, Value}] -> Name = Value
 	end,
-	["<", Name, encode_attrs(Attrs), ">\n", Text, "</", Name, ">\n", Accum];
+	[["<", Name, encode_attrs(Attrs), ">\n", Text, "</", Name, ">\n"] | Accum];
 
 % a regular element
 encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->

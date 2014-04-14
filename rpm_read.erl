@@ -38,7 +38,7 @@ on_load(File) ->
 %% A function that reads and parses RPM, fulfills an RPM description. 
 %% This is to be used, if you have to work with RPMs
 read_rpm(RPM) ->
-		{ok,F} = file:open(RPM,[read, binary, read_ahead]),
+		{ok,F} = file:open(RPM,[read, binary, read_ahead,raw]),
 		{ok, Lead} = read_rpm_lead(F),
 		{ok, {header_values_length, Max_Offset},Indexes} = read_rpm_header(F),
 		{ok, {SOff,Signature}} = read_rpm_header_data(F,Indexes, Max_Offset),
@@ -172,27 +172,46 @@ rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
 rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
 	RPM_DESC#rpm.checksum;
 rpm_get_checksum(Filename) ->
-	{ok, F} = file:open(Filename,[read, binary, read_ahead]),
+	{ok, F} = file:open(Filename,[read, binary, read_ahead,raw]),
 	ShaContext = crypto:hash_init(sha256),
 	MdContext = crypto:hash_init(md5),
 	rpm_get_checksum(F, MdContext, ShaContext).
+rpm_get_checksum(F, MdContext, ShaContext) ->
+	% there is no proper way of converting to textual hex.
+	% my hex is from erlang@c.j.r. It's fast and simple.
+	case file:read(F, 1048576) of
+		eof -> file:close(F), {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
+						[{type, sha256},{pkgid,'YES'}], bin_to:hex(crypto:hash_final(ShaContext))};
+		{ok, Data} -> rpm_get_checksum(F, crypto:hash_update(MdContext,Data), crypto:hash_update(ShaContext,Data))
+	end.
+
 
 %% filelist is in 3 indexes: basenames, directories and "a link" between them, dir index.
 %% length (Dir_index) == length( Base_names)
 %% directories are numerated from 0, so have to add 1 in nth/2
 %% if at least on of these arrays are not defined - it's an RPM without files (e.g. meta package with reqs only).
 
-join_filelist(Dir_index, Base_names, Directories) 
+ets_insert_list(Tab, [H|T], Count) -> ets:insert(Tab,{Count,H}), ets_insert_list(Tab, T, Count +1 );
+ets_insert_list(Tab, [], _Count) -> ok.
+
+join_filelist(_, Dir_index, Base_names, Directories) 
 	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> [];
 
-join_filelist(Dir_index, Base_names, Directories) -> 
-		% there is no special meaning for [] here. It's a convience element for xml encoding later
-        lists:zipwith(fun(A,B)-> {'file', [], [ <<(lists:nth(A+1, Directories))/binary, B/binary>> ]} end, Dir_index,  Base_names).
+join_filelist(RPM_DESC, Dir_index, Base_names, Directories) -> 
+		case ets:lookup(dirs,get_package_id(RPM_DESC)) of 
+			[{_,List}] -> List;
+			[] ->
+				ets_insert_list(dirs,Directories,0),
+				% there is no special meaning for [] here. It's a convience element for xml encoding later
+				List=lists:zipwith(fun(A,B)-> {'file', [], [ << (ets:lookup_element(dirs, A, 2))/binary, B/binary>> ]} end, Dir_index,  Base_names),
+				ets:insert(dirs,{get_package_id(RPM_DESC), List}), List
+		end.
 
 %%% Functions to work with rpm description from read_rpm/1
 rpm_get_filelist(RPM_DESC) ->
 	case proplists:get_value(1027, RPM_DESC#rpm.header) of
-		undefined -> join_filelist(proplists:get_value(1116, RPM_DESC#rpm.header),
+		undefined -> join_filelist(RPM_DESC, 
+								   proplists:get_value(1116, RPM_DESC#rpm.header),
 								   proplists:get_value(1117, RPM_DESC#rpm.header),
 				                   proplists:get_value(1118, RPM_DESC#rpm.header));
 		A -> A
@@ -227,15 +246,6 @@ rpm_get_version(RPM_DESC) ->
 				{rel, rpm_get_header_parameter_by_id(RPM_DESC, 1002)}
 			  ]}.
 rpm_get_summary(RPM_DESC) -> {summary,[],rpm_get_header_parameter_by_id(RPM_DESC, 1004)}.
-rpm_get_checksum(F, MdContext, ShaContext) ->
-	% there is no proper way of converting to textual hex.
-	% my hex is from erlang@c.j.r. It's fast and simple.
-	case file:read(F, 4096) of
-		eof -> file:close(F), {checksum,% bin_to:hex(crypto:md5_final(MdContext)),
-						[{type, sha256},{pkgid,'YES'}], bin_to:hex(crypto:hash_final(ShaContext))};
-		{ok, Data} -> rpm_get_checksum(F, crypto:hash_update(MdContext,Data), crypto:hash_update(ShaContext,Data))
-	end.
-
 rpm_get_description(RPM_DESC) -> {description, [], rpm_get_header_parameter_by_id(RPM_DESC, 1005)}.
 rpm_get_packager(RPM_DESC) -> {packager, [], rpm_get_header_parameter_by_id(RPM_DESC, 1015)}.
 rpm_get_license(RPM_DESC) -> {'rpm:license',[],rpm_get_header_parameter_by_id(RPM_DESC, 1014)}.
@@ -286,8 +296,8 @@ rpm_get_provides(RPM_DESC) ->
 	end.
 							
 rpm_get_requires(RPM_DESC) -> 
-	case lists:filter(	fun ({'rpm:entry',[{name,<<"rpmlib(",_Name/binary>>}|_]}) -> true;
-							({'rpm:entry',[{name,Name}|_]}) -> false
+	case lists:filter(	fun ({'rpm:entry',[{name,<<"rpmlib(",_Name/binary>>}|_]}) -> false;
+							({'rpm:entry',[{name,Name}|_]}) -> true
 						end, 
 							%nomatch == binary:match(Name,<<"rpmlib(">>)  end, 
 						zipwith3_wrapper(RPM_DESC, {1049, 1048, 1050})) of
@@ -401,7 +411,8 @@ get_package_other_xml(RPMD) ->
 
 
 generate_repo(DirName) ->
-	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table]),
+	ets:info(dirs) /= undefined orelse ets:new(dirs,[named_table, {read_concurrency,true}]),
+	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table, {read_concurrency,true}]),
 	%ets:i(),
 	{ok,DirList} = file:list_dir(DirName),
 	RPMDS=lists:filtermap( fun(Elem) -> 
@@ -415,7 +426,7 @@ generate_repo(DirName) ->
 	generate_other_xml(RPMDS,filename:join([DirName,"other.xml"])).
 
 generate_primary_xml(RPMDS,Filename) ->
-	{ok,Primary}=file:open(Filename, [write]),
+	{ok,Primary}=file:open(Filename, [raw,write]),
 	file:write(Primary, [ "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<metadata xmlns=\"http://linux.duke.edu/metadata/common\"",
 						  " xmlns:rpm=\"http://linux.duke.edu/metadata/rpm\" packages=\"",
 							io_lib:write(length(RPMDS)),"\">\n"]),
@@ -427,18 +438,18 @@ generate_primary_xml(RPMDS,Filename) ->
 	file:close(Primary).
 
 generate_filelist_xml(RPMDS,Filename ) ->
-	{ok,Filelist}=file:open(Filename, [write]),
+	{ok,Filelist}=file:open(Filename, [raw, write]),
 	file:write(Filelist, ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<filelists xmlns=\"http://linux.duke.edu/metadata/filelists\" packages=\"",
 							io_lib:write(length(RPMDS)),"\">\n"]),
-	lists:foreach(fun(Elem) -> file:write(Filelist,[get_package_filelist_xml(Elem)]) end, RPMDS),
+	lists:foreach(fun(Elem) -> file:write(Filelist,get_package_filelist_xml(Elem)) end, RPMDS),
 	file:write(Filelist,["</filelist>"]),
 	file:close(Filelist).
 
 generate_other_xml(RPMDS, Filename) ->
-	{ok,Other}=file:open(Filename, [write]),
+	{ok,Other}=file:open(Filename, [raw, write]),
 	file:write(Other,["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<otherdata xmlns=\"http://linux.duke.edu/metadata/other\" packages=\"",
 						io_lib:write(length(RPMDS)),"\">\n"]),
-	lists:foreach(fun(Elem) -> file:write(Other,[get_package_filelist_xml(Elem)]) end, RPMDS),
+	lists:foreach(fun(Elem) -> file:write(Other,get_package_filelist_xml(Elem)) end, RPMDS),
 	file:write(Other,["</otherdata>"]),
 	file:close(Other).
 
