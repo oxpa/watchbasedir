@@ -1,0 +1,6 @@
+[submodule "poolboy"]
+	path = poolboy
+	url = https://github.com/devinus/poolboy.git
+[submodule "inotify"]
+	path = inotify
+	url = https://github.com/massemanet/inotify
