@@ -48,9 +48,9 @@ read_rpm(RPM) ->
 		{ok, {HOff,Header}} = read_rpm_header_data(F,Head_indexes, Max_Header_Offset),
 		{ok, Header_end} = file:position(F,cur),
 		% {ok, _} = round_offset_by_eight(F,HOff),
-			{ok, Fileprops} = file:read_file_info(RPM,[{time,posix}]), 
-			Checksum = rpm_get_checksum(RPM),
-			file:close(F),
+		{ok, Fileprops} = file:read_file_info(RPM,[{time,posix}]), 
+		Checksum = rpm_get_checksum(RPM),
+		file:close(F),
 			#rpm{filename=RPM, 
 				 lead=Lead, 
 				signature=Signature, 
@@ -225,6 +225,9 @@ is_subbinary(_, <<>>) -> false;
 is_subbinary(Subbin, <<Subbin,_A/binary>>) -> true;
 is_subbinary(Subbin, <<_H,A/binary>>) -> is_subbinary(Subbin,A).
 
+single_node_helper(Atom,[]) when is_atom(Atom) -> {Atom, []};
+single_node_helper(Atom,AList) when is_atom(Atom) -> {Atom, [],AList}.
+
 
 rpm_get_primary_filelist(RPM_DESC) ->
 	lists:filter( fun ({_,_,[<<"/etc/",_Name/binary>>]}) -> true;
@@ -242,12 +245,9 @@ rpm_get_version(RPM_DESC) ->
 			  ]}.
 rpm_get_summary(RPM_DESC) -> {summary,[],[lists:nth(1,rpm_get_header_parameter_by_id(RPM_DESC, 1004))]}.
 rpm_get_description(RPM_DESC) -> {description, [], [lists:nth(1,rpm_get_header_parameter_by_id(RPM_DESC, 1005))]}.
-rpm_get_packager(RPM_DESC) -> {packager, [], rpm_get_header_parameter_by_id(RPM_DESC, 1015)}.
-rpm_get_license(RPM_DESC) -> {'rpm:license',[],rpm_get_header_parameter_by_id(RPM_DESC, 1014)}.
-rpm_get_url(RPM_DESC) -> case rpm_get_header_parameter_by_id(RPM_DESC, 1020) of
-						 [] ->  {url, []};
-						 A -> {url,[],A}
-						end.
+rpm_get_packager(RPM_DESC) -> single_node_helper(packager, rpm_get_header_parameter_by_id(RPM_DESC, 1015)).
+rpm_get_license(RPM_DESC) -> single_node_helper('rpm:license', rpm_get_header_parameter_by_id(RPM_DESC, 1014)).
+rpm_get_url(RPM_DESC) -> single_node_helper(url, rpm_get_header_parameter_by_id(RPM_DESC, 1020)).
 % http://lists.baseurl.org/pipermail/rpm-metadata/2010-April/001159.html 
 % "file" time in repo is mtime of the package
 rpm_get_filetime(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, mtime)}.
@@ -255,7 +255,7 @@ rpm_get_buildtime(RPM_DESC) -> {build,rpm_get_header_parameter_by_id(RPM_DESC, 1
 rpm_get_archive_size(RPM_DESC) -> {archive,integer_to_list(lists:nth(1,rpm_get_signature_parameter_by_id(RPM_DESC, 1007)))}.
 rpm_get_installed_size(RPM_DESC) -> {installed, integer_to_list(lists:nth(1,rpm_get_header_parameter_by_id(RPM_DESC, 1009)))}.
 rpm_get_location(RPM_DESC) -> {location, [{href,rpm_get_header_parameter_by_id(RPM_DESC, href)}]}.
-rpm_get_vendor(RPM_DESC) -> {'rpm:vendor',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1011)]}.
+rpm_get_vendor(RPM_DESC) -> single_node_helper('rpm:vendor',rpm_get_header_parameter_by_id(RPM_DESC, 1011)).
 rpm_get_group(RPM_DESC) -> {'rpm:group',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1016)]}.
 rpm_get_buildhost(RPM_DESC) -> {'rpm:buildhost',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1007)]}.
 rpm_get_src(RPM_DESC) -> {'rpm:sourcerpm',[],[rpm_get_header_parameter_by_id(RPM_DESC, 1044)]}.
@@ -288,11 +288,12 @@ helper_find_version(<<H,T/binary>>,Acc, Return_value) -> helper_find_version(T,<
 %states: initial, epoch, first, second (first and second - dashes).
 helper_parse_version(<<>>, Acc, [], <<>>)	 			    -> [{epoch, "0"}, {ver, Acc}];
 helper_parse_version(<<>>, Acc, [], Acc2)	 			    -> [{epoch, "0"}, {ver, Acc2}, {rel, Acc}];
-helper_parse_version(<<>>, Acc, Result, Acc2)			    -> lists:reverse([{rel,Acc}|[{ver, Acc2}|Result]]);
 helper_parse_version(<<>>, Acc, Result, <<>>)			    -> lists:reverse([{ver, Acc}|Result]);
-helper_parse_version(<<":",T/binary>>, Acc, [],   <<>>)	-> helper_parse_version(T, <<>>, [{epoch, Acc}], <<>>);
+helper_parse_version(<<>>, Acc, Result, Acc2)			    -> lists:reverse([{rel,Acc}|[{ver, Acc2}|Result]]);
+helper_parse_version(<<":",T/binary>>, Acc, [],     <<>>)	-> helper_parse_version(T, <<>>, [{epoch, Acc}], <<>>);
+helper_parse_version(<<"-",T/binary>>, Acc, [],     <<>>)	-> helper_parse_version(T, <<>>, [{epoch, "0"}], Acc);
 helper_parse_version(<<"-",T/binary>>, Acc, Result, <<>>)	-> helper_parse_version(T, <<>>, Result, Acc);
-helper_parse_version(<<"-",T/binary>>, Acc, Result, Acc2)   -> lists:reverse([{rel,T}|[ {ver,[Acc2, "-", Acc]}|Result]]);
+helper_parse_version(<<"-",T/binary>>, Acc, Result, Acc2)   -> helper_parse_version(T, <<>>, Result,[Acc2,"-",Acc]);
 helper_parse_version(<<H,T/binary>>,   Acc, Result, Acc2)	-> helper_parse_version(T, <<Acc/binary,H>>,  Result, Acc2).
 
 	
@@ -310,13 +311,13 @@ zipwith3_wrapper(RPM_DESC, {ID1, ID2, ID3}) ->
 rpm_get_provides(RPM_DESC) -> 
 	case zipwith3_wrapper(RPM_DESC, {1047, 1112, 1113}) of
 					[] -> [];
-		Non_empty_list -> {'rpm:provides', [], Non_empty_list}
+		Non_empty_list -> {'rpm:provides', [], sets:to_list(sets:from_list(Non_empty_list))}
 	end.
 							
 rpm_get_requires(RPM_DESC) -> 
 case zipwith3_wrapper(RPM_DESC, {1049, 1048, 1050}) of
 	[] -> [];
-	Non_empty_list -> {'rpm:requires', [], Non_empty_list}
+	Non_empty_list -> {'rpm:requires', [], sets:to_list(sets:from_list(Non_empty_list))}
 end.
 	%case lists:filter(	fun ({'rpm:entry',[{name,<<"rpmlib(",_Name/binary>>}|_]}) -> false;
 %							({'rpm:entry',[{name,Name}|_]}) -> true
