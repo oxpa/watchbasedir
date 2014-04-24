@@ -1,5 +1,6 @@
 -module(duexml). % damn useless erlang xml encoder
--export([encode_element/1, encode_attrs/1]).
+-compile(export_all).
+%-export([encode_element/1, encode_attrs/1]).
 %-on_load(init/0).
 
 %init() ->
@@ -23,18 +24,19 @@ escape_chars(Text) when is_atom(Text) ->
 			[] -> ets:insert(atoms, {Text,escape_chars(io_lib:format("~s", [Text]))}), escape_chars(Text);
 		    [{Text,Encoded}] -> Encoded
 		end;
-escape_chars("<") -> "&lt;";
-escape_chars(">") -> "&gt;";
-escape_chars("&") -> "&amp;";
+escape_chars(Text) when is_integer(Text) ->
+		integer_to_list(Text);
+escape_chars(Text) when is_list(Text) ->
+		escape_chars(Text,[]);
+escape_chars(<<T/binary>>) -> escape_chars(T,<<>>).
+
 %escape_chars("'") -> "&apos;";
 %escape_chars("\"") -> "&quot;";
-escape_chars(Text) when is_list(Text) ->
-		%io:format("debugging a list ~s~n", [Text]),
-		lists:map(fun escape_chars/1, Text);
-escape_chars(<<T/binary>>) -> escape_chars(T,<<>>);
-escape_chars(Text) when is_integer(Text) andalso Text > 254 ->
-		io_lib:write(Text);
-escape_chars(A) -> A.
+escape_chars(["<"|T], Acc) -> escape_chars(T,["&lt;"|Acc]);
+escape_chars([">"|T], Acc) -> escape_chars(T,["&gt;"|Acc]);
+escape_chars(["&"|T], Acc) -> escape_chars(T,["&amp;"|Acc]);
+escape_chars([H|T], Acc) -> escape_chars(T,[H|Acc]);
+escape_chars([], Acc) -> lists:reverse(Acc);
 
 escape_chars(<<"<",T/binary>>,Acc) -> escape_chars(T,<<Acc/binary,"&lt;">>);
 escape_chars(<<">",T/binary>>,Acc) -> escape_chars(T,<<Acc/binary,"&gt;">>);
@@ -53,7 +55,7 @@ encode_attrs(Attrs, Accum) ->
 												[]			->  Text=io_lib:format("~s",[Atom]), ets:insert(atoms, {Atom,Text});
 												[{Atom, T}]	->	Text=T
 											end,
-											[[" ", Text, "=\"", [escape_chars(Value)], "\"" ] |Acc]; 
+											[[" ", Text, "=\"", escape_chars(Value), "\"" ] |Acc]; 
 					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
 				Accum, 
 				Attrs).
@@ -66,7 +68,8 @@ encode_element({Element_name, Attrs, Elements=[{B, C, _}|_]},Accum) when is_atom
 		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
 		[{Element_name, Value}] -> Name = Value
 	end,
-	["<", Name, [encode_attrs(Attrs)], ">\n", Text, "</", Name,">\n", Accum];
+	["<", Name, encode_attrs(Attrs), ">\n", Text, "</", Name,">\n", Accum];
+
 encode_element({Element_name, Attrs, Elements=[{B, C}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
 	Text = encode_element(Elements),
 	case ets:lookup(atoms,Element_name) of
@@ -81,7 +84,7 @@ encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is
 		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
 		[{Element_name, Value}] -> Name = Value
 	end,
-	["<",Name, encode_attrs(Attrs), ">", [escape_chars(Text)], "</", Name, ">\n", Accum];
+	["<",Name, encode_attrs(Attrs), ">", escape_chars(Text), "</", Name, ">\n", Accum];
 
 % a simple element
 encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
@@ -93,6 +96,7 @@ encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(
 
 
 % for a list of elements
+encode_element([], _) -> [];
 encode_element(A_List, Accum) when is_list(A_List) ->
 	lists:foldr( fun(Elem, Acc) -> encode_element(Elem, Acc) end, Accum, A_List).
 
