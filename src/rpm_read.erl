@@ -423,7 +423,8 @@ get_package_filelist_xml(RPMD) ->
 get_package_other_xml(RPMD) ->
     duexml:encode_element({package,[{pkgid, get_package_id(RPMD)}, {name,rpm_get_name(RPMD)}, {arch,rpm_get_arch(RPMD)}],
 						[rpm_get_version(RPMD),
-						lists:reverse(lists:sublist(rpm_get_chagelog_entries(RPMD),10))
+						%lists:reverse(lists:sublist(rpm_get_chagelog_entries(RPMD),10))
+						rpm_get_chagelog_entries(RPMD)
 						]
 					}
 				  ).
@@ -472,7 +473,7 @@ generate_other_xml(RPMDS, Filename) ->
 	{ok,Other}=file:open(Filename, [raw, write]),
 	file:write(Other,["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<otherdata xmlns=\"http://linux.duke.edu/metadata/other\" packages=\"",
 						integer_to_list(length(RPMDS)),"\">\n"]),
-	lists:foreach(fun(Elem) -> file:write(Other,get_package_filelist_xml(Elem)) end, RPMDS),
+	lists:foreach(fun(Elem) -> file:write(Other,get_package_other_xml(Elem)) end, RPMDS),
 	file:write(Other,["</otherdata>"]),
 	file:close(Other).
 
