@@ -7,7 +7,7 @@ read this additionally:
 https://refspecs.linuxfoundation.org/LSB_2.0.1/LSB-Core/LSB-Core.html
 
 **TODO:**
-~* ensure you can generate a correct set of xmls~
+~~* ensure you can generate a correct set of xmls~~
 * think of caching key for files
 * speedup file processing (changelogs, filelists, etc.)
 * make an implementation using mnesia
