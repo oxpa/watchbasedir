@@ -3,27 +3,8 @@
 %-export([encode_element/1, encode_attrs/1]).
 %-on_load(init/0).
 
-%init() ->
-%:w	ets:info(atoms) /= undefines orelse ets:new(atoms,[]), ok.
-%xml_compiled_REs() ->
-	% {RE,Replacement}
-	%REs = [{"&", "\\&amp;"}, {"\"","\\&quot;"}, {"'","\\&apos;"}, {"<","\\&lt;"}, {">","\\&gt;"}],
-%	REs = [{"&", "\\&amp;"},{"<","\\&lt;"}, {">","\\&gt;"}],
-%	lists:foldr(fun({RE,Repl},Acc) -> {ok, RE_C} = re:compile(RE,[no_auto_capture, firstline, ungreedy]), [{RE_C,Repl}|Acc] end, [], REs).
-
-
-%escape_chars(Text, Acc) when is_atom(Text) ->
-%		escape_chars(io_lib:format("~s", [Text]), Acc);
-%escape_chars(Text, []) -> Text;
-%escape_chars(Text, [{Re,Repl}|Replacements]) ->
-%	io:format("~p~n", [Text]),
-%	escape_chars(Text, Replacements).%re:replace(Text, Re, Repl,[global,notempty]), Replacements).
-
 escape_chars(Text) when is_atom(Text) ->
-		case ets:lookup(atoms,Text) of
-			[] -> ets:insert(atoms, {Text,escape_chars(io_lib:format("~s", [Text]))}), escape_chars(Text);
-		    [{Text,Encoded}] -> Encoded
-		end;
+		encode_atom(Text);
 escape_chars(Text) when is_integer(Text) ->
 		integer_to_list(Text);
 escape_chars(Text) when is_list(Text) ->
@@ -46,52 +27,46 @@ escape_chars(<<>>,Acc) -> <<Acc/binary>>.
 
 
 encode_attrs(Attrs) ->
-	encode_attrs(Attrs, []).
+encode_attrs(Attrs, []).
 encode_attrs([], Accum) -> Accum;
 encode_attrs(Attrs, Accum) ->
 	lists:foldr(fun
 					({Atom,Value}, Acc) -> %debug("encoding ~p |~p|~n",[Atom,Value]), 
-										    case ets:lookup(atoms,Atom) of
-												[]			->  Text=io_lib:format("~s",[Atom]), ets:insert(atoms, {Atom,Text});
-												[{Atom, T}]	->	Text=T
-											end,
+											Text = encode_atom(Atom),
 											[[" ", Text, "=\"", escape_chars(Value), "\"" ] |Acc]; 
-					(List, Acc) when is_list(List) -> encode_attrs(List,Acc) end,
+					(List, Acc) when is_list(List) -> encode_attrs(List,Acc);
+					(A, Acc) -> error(badargs, A) end,
 				Accum, 
 				Attrs).
 
+% a wrapper for atoms:
+%    try get a string from an ets table
+%	 if there is nothing - encode and put there for future use.
+encode_atom(Name) when is_atom(Name) ->
+	case ets:lookup(atoms,Name) of
+		[] -> Elem_name=atom_to_binary(Name, latin1), ets:insert(atoms, {Name,Elem_name}), Elem_name;
+		[{Element_name, Value}] -> Value
+	end.
 
 % conventional functions for nested elements
 encode_element({Element_name, Attrs, Elements=[{B, C, _}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
 	Text = encode_element(Elements),
-	case ets:lookup(atoms,Element_name) of
-		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
-		[{Element_name, Value}] -> Name = Value
-	end,
+	Name = encode_atom(Element_name),
 	["<", Name, encode_attrs(Attrs), ">\n", Text, "</", Name,">\n", Accum];
 
 encode_element({Element_name, Attrs, Elements=[{B, C}|_]},Accum) when is_atom(Element_name), is_atom(B), is_list(C) or is_binary(C) ->
 	Text = encode_element(Elements),
-	case ets:lookup(atoms,Element_name) of
-		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
-		[{Element_name, Value}] -> Name = Value
-	end,
+	Name = encode_atom(Element_name),
 	[["<", Name, encode_attrs(Attrs), ">\n", Text, "</", Name, ">\n"] | Accum];
 
 % a regular element
 encode_element({Element_name, Attrs, Text},Accum) when is_atom(Element_name), is_list(Attrs), is_list(Text) ->
-	case ets:lookup(atoms,Element_name) of
-		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
-		[{Element_name, Value}] -> Name = Value
-	end,
+	Name = encode_atom(Element_name),
 	["<",Name, encode_attrs(Attrs), ">", escape_chars(Text), "</", Name, ">\n", Accum];
 
 % a simple element
 encode_element({Element_name, Attrs},Accum) when is_atom(Element_name), is_list(Attrs) ->
-	case ets:lookup(atoms,Element_name) of
-		[] -> Name=io_lib:format('~s',[Element_name]), ets:insert(atoms, {Element_name,Name});
-		[{Element_name, Value}] -> Name = Value
-	end,
+	Name = encode_atom(Element_name),
 	["<", Name, encode_attrs(Attrs), "/>\n", Accum];
 
 
