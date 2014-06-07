@@ -48,16 +48,16 @@ read_rpm(RPM) ->
 	% other headers have variable length and consists of three parts: head, index and storage
 
 	{ok, SignatureHead} = file:read(F, 16),
-	<<Magic:24,_Header_version:8,_Reserved:32,SigIndexs_count:32,SignatureStorageBytes:32>> = SignatureHead,
-	{ok, SignatureIndex}   = file:read(F, binary:decode_unsigned(SigIndexs_count*16)), 
-	{ok, SignatureStorage} = file:read(F, round_by_eight(binary:decode_unsigned(SignatureStorageBytes))),
+	<<_Magic:24,_Header_version:8,_Reserved:32,SigIndexs_count:32,SignatureStorageBytes:32>> = SignatureHead,
+	{ok, SignatureIndex}   = file:read(F, SigIndexs_count*16), 
+	{ok, SignatureStorage} = file:read(F, round_by_eight(SignatureStorageBytes)),
 	{ok, Signature} = parse_header(SignatureIndex, SignatureStorage),
 
-	HeaderStart = 96 + 16 + binary:decode_unsigned(SigIndexs_count*16) + round_by_eight(binary:decode_unsigned(SignatureStorageBytes)),
+	HeaderStart = 96 + 16 + SigIndexs_count*16 + round_by_eight(SignatureStorageBytes),
 	{ok, HeaderHead} = file:read(F, 16),
-	<<HMagic:24,_Header_version:8,_Reserved:32,HeaderIndexs_count:32,HeaderStorageBytes:32>> = HeaderHead,
-	{ok, HeaderIndex}   = file:read(F, binary:decode_unsigned(HeaderIndexs_count*16)), 
-	{ok, HeaderStorage} = file:read(F, round_by_eight(binary:decode_unsigned(HeaderStorageBytes))),
+	<<_HMagic:24,_Header_version:8,_Reserved:32,HeaderIndexs_count:32,HeaderStorageBytes:32>> = HeaderHead,
+	{ok, HeaderIndex}   = file:read(F, HeaderIndexs_count*16), 
+	{ok, HeaderStorage} = file:read(F, round_by_eight(HeaderStorageBytes)),
 	{ok, Header} = parse_header(HeaderIndex, HeaderStorage),
 	{ok, HeaderEnd} = file:position(F,cur),
 
@@ -65,7 +65,7 @@ read_rpm(RPM) ->
 
 	% now the "heavy" part of parsing: checksum
     ShaContext = crypto:hash_init(sha256),
-	ShaContextInterim = lists:foldl(fun(Elem,Acc) -> crypto:hash_update(ShaContext, Elem) end, 
+	ShaContextInterim = lists:foldl(fun(Elem,Acc) -> crypto:hash_update(Acc, Elem) end, ShaContext,
 								  [LeadData,SignatureHead,SignatureIndex,SignatureStorage,HeaderHead,HeaderIndex,HeaderStorage]),
 	Checksum = rpm_get_checksum(F, ShaContextInterim),
 
@@ -73,7 +73,7 @@ read_rpm(RPM) ->
 	#rpm{filename=RPM, 
 		 lead=Lead, 
 		signature=Signature, 
-		header=dict:store(href,RPM, dict:store(header_range,[	{start,integer_to_list(HeaderStart)},
+		header=dict:store(href,RPM, dict:store(header_range,[	{'start',integer_to_list(HeaderStart)},
 																{'end',integer_to_list(HeaderEnd)}]
 														   ,Header)), 
 		fileprops=Fileprops, 
@@ -96,11 +96,12 @@ parse_header(Index, Data) when is_binary(Index), is_binary(Data) ->
 							(_, _)      -> false end,
 						[ #rpm_tag_index{tag=Tag,data_type=Data_type, offset=Offset,num_of_entries=Num_of_entries} ||
 										 <<Tag:32,Data_type:32,Offset:32,Num_of_entries:32>> <= Index ]
-						);
+						),
+	parse_header(Indexes, Data);
 parse_header(Indexes, Data) when is_list(Indexes) -> parse_header(Indexes, Data, dict:new()).
 
 % if all indexes were parsed return data
-parse_header([],Data,Acc) -> {ok, Acc};
+parse_header([], _Data, Acc) -> {ok, Acc};
 
 % going to read a 6-th data type - a string
 % or a list of string (8 and 9). 7 is binary and is read the other way
