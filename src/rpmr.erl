@@ -19,7 +19,6 @@ round_by_eight(Off) ->
     end.
 
 
-%String=lists:sublist((binary:split(Read_Data,<<0>>,[global])),Index#rpm_tag_index.num_of_entries),
 get_strings(Data, Count) -> get_strings(Data, Count, <<>>, []).
 get_strings(_Data, 0, _Str, Acc) -> lists:reverse(Acc);
 get_strings(<<0,Data/binary>>, Count, Str, Acc) -> get_strings(Data, Count-1, <<>>, [Str|Acc]);
@@ -64,10 +63,9 @@ read_rpm(RPM) ->
 	{ok, Fileprops} = file:read_file_info(RPM,[{time,posix}]), 
 
 	% now the "heavy" part of parsing: checksum
-    ShaContext = crypto:hash_init(sha256),
-	ShaContextInterim = lists:foldl(fun(Elem,Acc) -> crypto:hash_update(Acc, Elem) end, ShaContext,
+	ShaContext = lists:foldl(fun(Elem,Acc) -> crypto:hash_update(Acc, Elem) end, crypto:hash_init(sha256),
 								  [LeadData,SignatureHead,SignatureIndex,SignatureStorage,HeaderHead,HeaderIndex,HeaderStorage]),
-	Checksum = rpm_get_checksum(F, ShaContextInterim),
+	Checksum = rpm_get_checksum(F, ShaContext),
 
 	file:close(F),
 	#rpm{filename=RPM, 
@@ -82,8 +80,7 @@ read_rpm(RPM) ->
 parse_lead(Data) ->
 	% don't look for this struct around, you wont need it any way.
 	?RPM_LEAD = Data,
-	if 
-		Magic == 3987467995 -> % 16#edabeedb - rpm lead magic number.
+	if Magic == 3987467995 -> % 16#edabeedb - rpm lead magic number.
 			{ok, ?RPM_LEAD};
 		true -> {error, "Wrong LEAD magic."}
 	end.
