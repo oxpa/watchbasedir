@@ -35,6 +35,9 @@ on_load(File) ->
 	RPM = read_rpm(File),
 	rpm_get_filelist(RPM).
 
+preread_rpm(RPM) -> 
+	{ok, Fileprops} = file:read_file_info(RPM,[{time,posix}]),
+	#rpm{filename=RPM,fileprops=Fileprops}.
 %% A function that reads and parses RPM, fulfills an RPM description. 
 %% This is to be used first, if you have to read anything from an RPM
 read_rpm(RPM) ->
@@ -150,8 +153,9 @@ rpm_get_signature_parameter_by_id(RPM_DESC, Id) ->
 
 rpm_get_file_parameter_by_id(RPM_DESC, Id)  ->
 	case Id of
-		mtime	-> integer_to_list(RPM_DESC#rpm.fileprops#file_info.mtime); 
-		size	-> integer_to_list( RPM_DESC#rpm.fileprops#file_info.size)
+		filename -> RPM_DESC#rpm.filename;
+		mtime	 -> integer_to_list(RPM_DESC#rpm.fileprops#file_info.mtime); 
+		size	 -> integer_to_list( RPM_DESC#rpm.fileprops#file_info.size)
 	end.
 
 rpm_get_checksum(RPM_DESC) when is_tuple(RPM_DESC)->
@@ -242,6 +246,8 @@ rpm_get_url(RPM_DESC) -> single_node_helper(url, rpm_get_header_parameter_by_id(
 % http://lists.baseurl.org/pipermail/rpm-metadata/2010-April/001159.html 
 % "file" time in repo is mtime of the package
 rpm_get_filetime(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, mtime)}.
+rpm_get_filesize(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, size)}.
+rpm_get_filename(RPM_DESC) -> {file, rpm_get_file_parameter_by_id(RPM_DESC, filename)}.
 rpm_get_buildtime(RPM_DESC) -> {build,integer_to_list(lists:nth(1,rpm_get_header_parameter_by_id(RPM_DESC, 1006)))}.
 rpm_get_archive_size(RPM_DESC) -> {archive,integer_to_list(lists:nth(1,rpm_get_signature_parameter_by_id(RPM_DESC, 1007)))}.
 rpm_get_installed_size(RPM_DESC) -> {installed, integer_to_list(lists:nth(1,rpm_get_header_parameter_by_id(RPM_DESC, 1009)))}.
@@ -371,6 +377,7 @@ rpm_get_chagelog_entries(RPMD) ->
 				).
 
 
+get_package_storage_id(RPMD) -> {rpm_get_filename(RPMD), rpm_get_filesize(RPMD), rpm_get_filetime(RPMD)}.
 get_package_id(RPMD) ->
 	{_,_,Id}=rpm_get_checksum(RPMD), Id.
 
@@ -421,17 +428,24 @@ get_package_other_xml(RPMD) ->
 				  ).
 
 
-
-
-
+write_cached_xmls(SId,Primary,Filelist,Other) ->
+    file:write(Primary,ets:lookup_element(packages,{SId,primary},2)),
+    file:write(Filelist,ets:lookup_element(packages,{SId,filelist},2)),
+    file:write(Other,ets:lookup_element(packages,{SId,other},2)).
+	
 
 generate_repo(DirName) ->
+	% dirs is an ets table to compile rpm filelists
+	% atoms is for xml encoder
+	% 
 	ets:info(dirs) /= undefined orelse ets:new(dirs,[named_table, {read_concurrency,true}]),
-	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table, {read_concurrency,true}]),
+	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table, ordered_set, {read_concurrency,true}]),
+	ets:info(repoDirs) /= undefined orelse ets:new(repoDirs,[named_table, bag, {read_concurrency,true}]),
+	ets:info(packages) /= undefined orelse ets:new(packages,[named_table, ordered_set, compressed,{read_concurrency,true}]),
 	%ets:i(),
-	{ok,Primary}=file:open(filename:join([DirName,"primary.xml"]), [raw,write]),
-    {ok,Filelist}=file:open(filename:join([DirName,"filelist.xml"]), [raw, write]),
-    {ok,Other}=file:open(filename:join([DirName,"other.xml"]), [raw, write]),
+	{ok,Primary}=file:open(filename:join([DirName,"primary.xml.gz"]), [raw,write, compressed]),
+    {ok,Filelist}=file:open(filename:join([DirName,"filelist.xml.gz"]), [raw, write, compressed]),
+    {ok,Other}=file:open(filename:join([DirName,"other.xml.gz"]), [raw, write, compressed]),
 	{ok,DirList} = file:list_dir(DirName),
 
 	file:write(Primary, [ "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<metadata xmlns=\"http://linux.duke.edu/metadata/common\"",
@@ -444,15 +458,22 @@ generate_repo(DirName) ->
 	file:write(Other,["<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<otherdata xmlns=\"http://linux.duke.edu/metadata/other\" packages=\"",
 						integer_to_list(length(DirList)),"\">\n"]),
 
-	RPMDS=lists:foreach( fun(Elem) -> 
-						case lists:suffix(".rpm",Elem) of
-							true -> RPMD = read_rpm(filename:join([DirName,Elem])),
-									file:write(Primary,get_package_primary_xml(RPMD)),
-									file:write(Filelist,get_package_filelist_xml(RPMD)),
-									file:write(Other,get_package_other_xml(RPMD));
-							_ -> ok
-						end end,
-					DirList),
+	lists:foreach( fun(Elem) -> 
+		case lists:suffix(".rpm",Elem) of
+			true -> Filename=filename:join([DirName,Elem]),
+					PreRPM=preread_rpm(Filename), SId=get_package_storage_id(PreRPM),
+			        case ets:member(packages,{SId,primary}) of
+						false ->
+								RPMD = read_rpm(filename:join([DirName,Elem])),
+								ets:insert(packages,{{SId, primary}, get_package_primary_xml(RPMD)}),
+								ets:insert(packages,{{SId, filelist}, get_package_filelist_xml(RPMD)}),
+								ets:insert(packages,{{SId, other}, get_package_other_xml(RPMD)}),
+								write_cached_xmls(SId,Primary,Filelist,Other);	
+						true -> write_cached_xmls(SId,Primary,Filelist,Other)
+					end;
+			_ -> ok
+		end end,
+		DirList),
 	file:write(Primary,["</metadata>"]),
 	file:write(Filelist,["</filelist>"]),
 	file:write(Other,["</otherdata>"]),
