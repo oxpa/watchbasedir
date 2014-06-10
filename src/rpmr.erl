@@ -177,21 +177,22 @@ rpm_get_checksum(F, Context) ->
 
 gb_insert_list(Tree, [H|T], Count) -> gb_insert_list(dict:store(Count,H,Tree), T, Count+1);
 gb_insert_list(Tree, [], _Count) -> Tree.
-%ets_insert_list(Tab, [H|T], Count) -> ets:insert(Tab,{Count,H}), ets_insert_list(Tab, T, Count +1 );
-%ets_insert_list(_Tab, [], _Count) -> ok.
+ets_insert_list(Tab, [H|T], Count) -> ets:insert(Tab,{Count,H}), ets_insert_list(Tab, T, Count +1 );
+ets_insert_list(_Tab, [], _Count) -> ok.
 
 join_filelist(_, Dir_index, Base_names, Directories) 
 	when Dir_index == undefined; Base_names == undefined; Directories == undefined -> [];
 
 join_filelist(RPM_DESC, Dir_index, Base_names, Directories) -> 
-		case ets:lookup(dirs,get_package_id(RPM_DESC)) of
-			[{_,List}] -> List;
-			[] ->
-				Dir_Tree=gb_insert_list(dict:new(), Directories,0),
-				List=lists:zipwith(fun(A,B)-> << (dict:fetch(A,Dir_Tree))/binary, B/binary>>  end, Dir_index,  Base_names),
-				ets:insert(dirs,{get_package_id(RPM_DESC), List}),
-				List
-		end.
+	lists:zipwith(fun(A,B)-> << (lists:nth(A+1,Directories))/binary, B/binary>>  end, Dir_index,  Base_names).
+		%case ets:lookup(dirs,get_package_id(RPM_DESC)) of
+	%		[{_,List}] -> List;
+	%		[] ->
+	%			Dir_Tree=gb_insert_list(dict:new(), Directories,0),
+	%			List=lists:zipwith(fun(A,B)-> << (dict:fetch(A,Dir_Tree))/binary, B/binary>>  end, Dir_index,  Base_names),
+	%			ets:insert(dirs,{get_package_id(RPM_DESC), List}),
+	%			List
+	%	end.
 
 %		case ets:lookup(dirs,get_package_id(RPM_DESC)) of 
 %			[{_,List}] -> List;
@@ -428,10 +429,13 @@ get_package_other_xml(RPMD) ->
 				  ).
 
 
+lookup_element(Table, Element, Number) ->
+	%io:format("~p ~p ~p", [Table, Element, Number]),
+	element(Number,lists:nth(1,dets:lookup(Table, Element))).
 write_cached_xmls(SId,Primary,Filelist,Other) ->
-    file:write(Primary,ets:lookup_element(packages,{SId,primary},2)),
-    file:write(Filelist,ets:lookup_element(packages,{SId,filelist},2)),
-    file:write(Other,ets:lookup_element(packages,{SId,other},2)).
+    file:write(Primary,zlib:uncompress(lookup_element(packages,{SId,primary},2))),
+    file:write(Filelist,zlib:uncompress(lookup_element(packages,{SId,filelist},2))),
+    file:write(Other,zlib:uncompress(lookup_element(packages,{SId,other},2))).
 	
 
 generate_repo(DirName) ->
@@ -440,8 +444,10 @@ generate_repo(DirName) ->
 	% 
 	ets:info(dirs) /= undefined orelse ets:new(dirs,[named_table, {read_concurrency,true}]),
 	ets:info(atoms) /= undefined orelse ets:new(atoms,[named_table, ordered_set, {read_concurrency,true}]),
-	ets:info(repoDirs) /= undefined orelse ets:new(repoDirs,[named_table, bag, {read_concurrency,true}]),
-	ets:info(packages) /= undefined orelse ets:new(packages,[named_table, ordered_set, compressed,{read_concurrency,true}]),
+	%ets:info(repoDirs) /= undefined orelse ets:new(repoDirs,[named_table, bag, {read_concurrency,true}]),
+	dets:info(repoDirs) /= undefined orelse dets:open_file(repoDirs,[{file,filename:join([DirName,"repoDirs"])},{ram_file, true}]),
+	%ets:info(packages) /= undefined orelse ets:new(packages,[named_table, ordered_set, {read_concurrency,true}]),
+	dets:info(packages) /= undefined orelse dets:open_file(packages,[{file,filename:join([DirName,"packages"])},{ram_file, true}]),
 	%ets:i(),
 	{ok,Primary}=file:open(filename:join([DirName,"primary.xml.gz"]), [raw,write, compressed]),
     {ok,Filelist}=file:open(filename:join([DirName,"filelist.xml.gz"]), [raw, write, compressed]),
@@ -462,12 +468,12 @@ generate_repo(DirName) ->
 		case lists:suffix(".rpm",Elem) of
 			true -> Filename=filename:join([DirName,Elem]),
 					PreRPM=preread_rpm(Filename), SId=get_package_storage_id(PreRPM),
-			        case ets:member(packages,{SId,primary}) of
+			        case dets:member(packages,{SId,primary}) of
 						false ->
 								RPMD = read_rpm(filename:join([DirName,Elem])),
-								ets:insert(packages,{{SId, primary}, get_package_primary_xml(RPMD)}),
-								ets:insert(packages,{{SId, filelist}, get_package_filelist_xml(RPMD)}),
-								ets:insert(packages,{{SId, other}, get_package_other_xml(RPMD)}),
+								dets:insert(packages,{{SId, primary}, zlib:compress(iolist_to_binary(get_package_primary_xml(RPMD)))}),
+								dets:insert(packages,{{SId, filelist}, zlib:compress(iolist_to_binary(get_package_filelist_xml(RPMD)))}),
+								dets:insert(packages,{{SId, other}, zlib:compress(iolist_to_binary(get_package_other_xml(RPMD)))}),
 								write_cached_xmls(SId,Primary,Filelist,Other);	
 						true -> write_cached_xmls(SId,Primary,Filelist,Other)
 					end;
@@ -477,6 +483,7 @@ generate_repo(DirName) ->
 	file:write(Primary,["</metadata>"]),
 	file:write(Filelist,["</filelist>"]),
 	file:write(Other,["</otherdata>"]),
-	file:close(Primary), file:close(Filelist), file:close(Other).
+	file:close(Primary), file:close(Filelist), file:close(Other),
+	dets:close(packages), dets:close(repoDirs).
 
 
