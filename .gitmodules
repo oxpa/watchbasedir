@@ -4,3 +4,6 @@
 [submodule "inotify"]
 	path = inotify
 	url = https://github.com/massemanet/inotify
+[submodule "pooler"]
+	path = pooler
+	url = git@github.com:seth/pooler.git
