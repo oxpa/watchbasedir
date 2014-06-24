@@ -437,6 +437,18 @@ write_cached_xmls(SId,Primary,Filelist,Other) ->
     file:write(Filelist,zlib:uncompress(lookup_element(packages,{SId,filelist},2))),
     file:write(Other,zlib:uncompress(lookup_element(packages,{SId,other},2))).
 	
+cache_package(Table, RPM) ->
+	PreRPM=preread_rpm(Filename), 
+	SId=get_package_storage_id(PreRPM),
+	case dets:member(Table,{SId,primary}) of
+	    false ->
+                RPMD = read_rpm(RPM),
+                dets:insert(Table,{{SId, primary}, zlib:compress(iolist_to_binary(get_package_primary_xml(RPMD)))}),
+                dets:insert(Table,{{SId, filelist}, zlib:compress(iolist_to_binary(get_package_filelist_xml(RPMD)))}),
+                dets:insert(Table,{{SId, other}, zlib:compress(iolist_to_binary(get_package_other_xml(RPMD)))}),
+				ok;
+        true -> ok;
+    end;
 
 generate_repo(DirName) ->
 	% dirs is an ets table to compile rpm filelists
