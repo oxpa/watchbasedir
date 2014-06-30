@@ -1,0 +1,15 @@
+{application, watchbasedirapp,
+ [
+  {description, ""},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+				  crypto
+                 ]},
+  {mod, { watchbasedirapp, [{defaults,"/etc/sysconfig/watchbasedir"},{confdir,"/etc/watchbasedir/"}]}},
+  {modules, [rpmr, watchbasedir_sup, watchbasedir_worker, bin_to, duexml, disk_io_worker, scout, watchbasedir]},
+  {env, []}
+ ]}.
+

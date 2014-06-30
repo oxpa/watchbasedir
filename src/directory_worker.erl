@@ -11,25 +11,36 @@ start_link(Args) ->
 init(Args) -> gen_server:cast(self(),{start}), {ok,#state{options=Args}}.
 
 handle_call(_Request, _From, State) -> {reply,ok,State}.
-handle_cast({start},State) -> Dir=proplists:get_value(directory,State#state.options), 
-							
-							  preprocess(Dir), 
-							  start_watch(Dir), {noreply,State};
+handle_cast({start},State) -> look_for_and_load_cache(State),
+							  Dirs=subdirs(proplists:get_value(directory,State#state.options)), 
+							  start_watch(Dirs,State),
+							  check_and_update_cache(State,Dirs), 
+							  {noreply,State};
 
-handle_cast(Msg, State) -> io:write("got ~p~n",[Msg]), {noreply, State}.
-handle_info(_Info, State) -> {noreply, State}.
+handle_cast(Msg, State) -> io:fwrite("got cast: ~p~n",[Msg]), {noreply, State}.
+handle_info(Info, State) -> io:fwrite("got info: ~p~n",[Info]),{noreply, State}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
+look_for_and_load_cache(State) -> Table = filename:join([
+											proplists:get_value(basedir,State#state.options,"/"),
+											proplists:get_value(dir,State#state.options,"."),
+											proplists:get_value(cache_filename,State#state.options, "watchbasedir.dat")
+										]).
+								  %dets:open_file(
 
-start_watch(Directory) ->
+start_watch(Directory, _State) -> 
 	lists:foreach(fun(A) -> inoteefy:watch(A,fun(X) -> io:fwrite("~p~n",[X]) end) end, subdirs(Directory)).
 
 preprocess(Directory) -> ok.
+
 inotify_callback(X) -> io:write("got ~p~n",[X]).
+
+check_and_update_cache(State,Dirs) -> ok.
 
 
 subdirs(Directory) -> subdirs(Directory, []).
+
 subdirs(Directory, Accumulator) ->
 	io:format("processing ~s: ~n", [Directory]),
 	case file:list_dir(Directory) of 
