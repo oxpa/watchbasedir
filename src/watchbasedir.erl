@@ -16,10 +16,11 @@ start_link(Args) ->
 
 stop() -> gen_server:call(?MODULE, stop).
 
-init(Args) -> gen_server:cast(self(), start), {ok,#state{}}.
+init(Args) -> 
+	process_flag(trap_exit, true),
+	gen_server:cast(self(), {start,Args}), {ok,#state{}}.
 
-handle_cast(start, State) ->
-	Args=[],
+handle_cast({start,Args}, State) ->
     Callback = fun ({Dir,_Type,_OP,_Coockie,Name}=A) ->
                 %TODO: filter events by OP, Name and/or cookie
                 case supervisor:start_child(scout, {filename:join(Dir,Name), {scout,start_link,[A]}, temporary, brutal_kill, worker, [scout]}) of
@@ -30,10 +31,13 @@ handle_cast(start, State) ->
                 end end,
     Dirs=lists:filter(fun(Dir) -> filelib:is_dir(Dir) end, 
 					  proplists:get_value(dirs,Args,["/home/oxpa/programms/watchbasedir/test.repo/Packages/"])),
-	
+	lager:debug("watchbasedir got dir list of: ~p",[Dirs]),
 	lists:foreach(fun(Dir) -> 
+					lager:debug("watchbasedir: opening cache for ~p",[Dir]),
 					filelib:ensure_dir(filename:join([Dir,"wbcache","watchbasedir.dat"])),
-					dets:open_file(Dir,[{file,filename:join([Dir,"wbcache","watchbasedir.dat"])},{ram_file, true}]) end, Dirs),
+					dets:open_file(Dir,[{file,filename:join([Dir,"wbcache","watchbasedir.dat"])},{ram_file, true}]) 
+				  end, 
+				  Dirs),
     lists:foreach(fun(Dir) -> erlinotify:watch(Dir, Callback) end, Dirs),
     lists:foreach(fun(Dir) -> poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{process_dir,Dir}, 600000) end, 600000) 
 							end, Dirs),
@@ -48,5 +52,6 @@ handle_info(_,State) ->
 
 code_change(_,_,_) -> ok.
 terminate(_,State) -> lists:foreach(fun(Dir) -> dets:close(Dir) end, State#state.dirs),
+				lager:debug("watchbasedir ~p terminating",[self()]),
 				ok.
 

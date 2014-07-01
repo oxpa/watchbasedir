@@ -13,6 +13,8 @@ start(_Type, Args) ->
 stop(_State) ->
     ok.
 init(Args) ->
+	lager:set_loglevel(lager_console_backend, debug),
+	lager:info("starting application"),
     Pools=[{name,{local,disk_workers}},{worker_module,disk_io_worker},{size,5},{max_overflow,0}],
 
     {ok, {{one_for_all, 1, 1}, [
