@@ -21,14 +21,15 @@ stop(_) -> gen_server:call(?MODULE, stop).
 
 % call to cache a file
 handle_call({process_file,Dir, F},_From, S) ->
-	lager:info("Worker ~p is going to cache ~p",[self(),F]),
-	rpmr:cache_package(Dir,F),	
+	lager:info("Worker ~p is going to cache ~p",[self(),Dir++F]),
+	rpmr:cache_package(Dir,Dir++F),								%TODO: restart strategy into configuration
 	case supervisor:start_child(scout, {Dir, {scout, start_link,[Dir]}, transient, brutal_kill, worker, [scout]}) of
 		{ok,_} -> ok;
         {error,{already_started,P} } -> gen_server:cast(P,Dir);
         _ -> lager:critical("Unable to start scout for ~p",[Dir])
     end,
 	{reply, ok, S};
+
 
 % call to build repo from cache
 handle_call({build_dir,D},_From, S) ->

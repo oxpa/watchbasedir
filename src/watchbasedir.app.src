@@ -6,10 +6,13 @@
   {applications, [
                   kernel,
                   stdlib,
-				  crypto
+				  crypto,
+				  lager,
+				  ets_manager,
+				  erlinotify
                  ]},
-  {mod, { watchbasedir, [{defaults,"/etc/sysconfig/watchbasedir"},{confdir,"/etc/watchbasedir/"}]}},
-  {modules, [rpmr, watchbasedir_sup, watchbasedir_worker, bin_to, duexml]},
+  {mod, { watchbasedirapp, [{defaults,"/etc/sysconfig/watchbasedir"},{confdir,"/etc/watchbasedir/"}]}},
+  {modules, [rpmr, watchbasedir_sup, watchbasedir_worker, bin_to, duexml, disk_io_worker, scout, watchbasedir]},
   {env, []}
  ]}.
 

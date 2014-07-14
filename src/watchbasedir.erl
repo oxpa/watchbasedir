@@ -21,14 +21,16 @@ init(Args) ->
 	gen_server:cast(self(), {start,Args}), {ok,#state{}}.
 
 handle_cast({start,Args}, State) ->
-    Callback = fun ({Dir,_Type,_OP,_Coockie,Name}=A) ->
-                %TODO: filter events by OP, Name and/or cookie
-                case supervisor:start_child(scout, {filename:join(Dir,Name), {scout,start_link,[A]}, temporary, brutal_kill, worker, [scout]}) of
-                    {ok,_} -> ok;
-                    {error,{already_started,P} } -> error_logger:info_report("casting message to "++io_lib:format("~p",[P])),
-                                                    gen_server:cast(P,A);
-                    _ -> ok
-                end end,
+						%TODO: filter events by OP, Name and/or cookie
+    Callback = fun	({Dir,_Type,OP,_Coockie,Name}=A) when OP /= close_write -> ok;
+					({Dir,_Type,OP,_Coockie,Name}=A) when OP == close_write ->               %TODO: restart strategy in configuration
+						case supervisor:start_child(scout, {filename:join(Dir,Name), {scout,start_link,[A]}, temporary, brutal_kill, worker, [scout]}) of
+							{ok,_} -> ok;
+							{error,{already_started,P} } -> error_logger:info_report("casting message to "++io_lib:format("~p",[P])),
+															gen_server:cast(P,A);
+							_ -> ok
+						end 
+				end,
     Dirs=lists:filter(fun(Dir) -> filelib:is_dir(Dir) end, 
 					  proplists:get_value(dirs,Args,["/home/oxpa/programms/watchbasedir/test.repo/Packages/"])),
 	lager:debug("watchbasedir got dir list of: ~p",[Dirs]),
@@ -39,8 +41,14 @@ handle_cast({start,Args}, State) ->
 				  end, 
 				  Dirs),
     lists:foreach(fun(Dir) -> erlinotify:watch(Dir, Callback) end, Dirs),
-    lists:foreach(fun(Dir) -> poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{process_dir,Dir}, 600000) end, 600000) 
-							end, Dirs),
+    lists:foreach(fun(Dir) -> 
+							case supervisor:start_child(scout, {Dir, {scout, start_link,[{verify,Dir}]}, transient, brutal_kill, worker, [scout]}) of
+								{ok,_} -> ok;
+								{error,{already_started,P} } -> gen_server:cast(P,Dir);
+								_ -> lager:critical("watchbasedir: unable to start scout for ~p",[Dir])
+							end
+						%poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{process_dir,Dir}, 600000) end, 600000) 
+				  end, Dirs),
     {noreply,#state{dirs=Dirs}};
 
 handle_cast(M, S)  when M /= start->

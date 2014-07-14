@@ -17,13 +17,13 @@ start_link(Args) ->
 	gen_server:start_link(?MODULE, Args, []).
 
 init({Dir,_Type,close_write,_Cookie,Name}) ->
-	lager:debug("Saw "++Name++". Waiting for some time"),
+	lager:debug("Scout saw "++Name++". Waiting for some time"),
 	{ok, #state{name=Name,dir=Dir}, ?DELAY};
 init({_Dir,_Type,OP,_Cookie,Name}) -> 
-	lager:warning("ignoring operation " ++io_lib:format("~p",[OP])++" on "++Name),
+	lager:warning("scout is ignoring operation " ++io_lib:format("~p",[OP])++" on "++Name),
 	{ignore};
 init(Dir) when is_list(Dir); is_binary(Dir) -> 
-	lager:debug("Got directory " ++ [Dir] ++". Wating for timeout"),
+	lager:debug("Scout got directory " ++ [Dir] ++". Wating for timeout"),
 	{ok, #state{dir=Dir},?DELAY};
 	
 init(_) -> 
@@ -53,12 +53,14 @@ handle_cast(Message, State) ->
 
 handle_info(timeout,State=#state{name=""}) -> 
 	lager:info("Scout calling poolboy to build repo in ~p", [State#state.dir]),
-    poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{build_dir,State#state.dir}) end, 60000),
+    poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{build_dir,State#state.dir},600000) end, 600000),
+	lager:debug("Scout got repo ~p built in time", [State#state.dir]),
     {stop,shutdown,State};
 
 handle_info(timeout,State) when State#state.name /= "" , State#state.dir /= "" -> 
 	lager:debug("Scout calling poolboy to cache ~p ~p",[State#state.dir,State#state.name]),
-	poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{process_file,State#state.dir++State#state.name}) end, 60000),
+	poolboy:transaction(disk_workers, fun(Worker) -> gen_server:call(Worker,{process_file,State#state.dir,State#state.name},60000) end, 60000),
+	lager:debug("Scout got package  ~p ~p cached in time",[State#state.dir,State#state.name]),
 	{stop,shutdown,State};
 
 handle_info(timeout,State) ->
